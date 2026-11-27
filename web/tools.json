@@ -2728,12 +2728,21 @@
   {
    "name": "claude.audio",
    "room": "claude",
-   "description": "Turn audio into what a model can read: a labelled spectrogram and a waveform image (fitted to the resolution tier) plus measured numbers — duration, loudness, peaks, dominant frequencies, tempo and pitch where detectable. There is no speech-to-text here: for spoken content supply a transcript. Returns the image files, token costs and the measurements.",
+   "description": "Turn audio into what a model can read: a labelled spectrogram and a waveform image (fitted to the resolution tier) plus measured numbers — duration, loudness, peaks, dominant frequencies, tempo and pitch where detectable. For spoken content set transcribe=true: it runs speech.transcribe (Whisper in the browser; the first use downloads the model weights from the Hugging Face Hub — about 80–210 MB for the default model — and caches them) and adds the transcript as a text part. Returns the image files, the transcript if asked, token costs and the measurements.",
    "inputSchema": {
     "properties": {
      "input": {
       "type": "string",
       "description": "VFS path of the audio file"
+     },
+     "transcribe": {
+      "type": "boolean",
+      "default": false,
+      "description": "Also transcribe speech with Whisper (downloads a model on first use)"
+     },
+     "language": {
+      "type": "string",
+      "description": "Spoken language code for the transcript, e.g. \"en\", \"es\" (default: auto-detect — less reliable)"
      },
      "tier": {
       "type": "string",
@@ -9811,7 +9820,7 @@
   {
    "name": "llm.chat",
    "room": "mind",
-   "description": "Chat with a small language model running in the browser: pass the conversation so far as messages [{role, content}, …] (roles: system, user, assistant; the last one must be user) and get the assistant's next reply, formatted through the model's own chat template. The tool is stateless — send the whole history each time, appending the returned reply as an assistant message before the next user turn. The reply is in result.text and as result.message {role:\"assistant\", content}. Returns the text, finishReason (eos = the model ended its turn, length = maxTokens reached, stop = a stop string matched), promptTokens, tokens generated, tokensPerSecond (after the first token), timeToFirstTokenMs, the backend and quantisation actually used (with fallbackReason when WebGPU was not used), loadMs, downloadedBytes vs fromCache. These are SMALL models (0.1–1.7 B parameters): good for rewriting, summarising a paragraph, classification, extraction to a format, simple Q&A; weak at arithmetic, long reasoning and obscure facts — check what they say. DOWNLOADS on first use of a model, from huggingface.co: smollm2-135m 120 MB (139 MB on CPU), smollm2-360m 275 MB (367 MB on CPU), qwen2.5-0.5b 490 MB (519 MB on CPU), smollm2-1.7b 1111 MB (WebGPU only), qwen2.5-1.5b 1229 MB (WebGPU only); plus the 29 MB runtime from this site. Speed: tens to a few hundred tokens/s on a desktop GPU via WebGPU; on CPU (single-threaded WASM) only smollm2-135m, smollm2-360m and qwen2.5-0.5b are allowed, at roughly 2–15 tokens/s, and the 1.5–1.7 B models are refused. One language model stays loaded at a time (model.status / model.unload). Runs entirely in this page: the audio/prompt and the result never leave the browser. The only network traffic is the one-time download of model files from huggingface.co (and its CDN hosts under hf.co), cached afterwards in the browser (Cache API).",
+   "description": "Chat with a small language model running in the browser: pass the conversation so far as messages [{role, content}, …] (roles: system, user, assistant; the last one must be user) and get the assistant's next reply, formatted through the model's own chat template. The tool is stateless — send the whole history each time, appending the returned reply as an assistant message before the next user turn. The reply is in result.text and as result.message {role:\"assistant\", content}. Returns the text, finishReason (eos = the model ended its turn, length = maxTokens reached, stop = a stop string matched), promptTokens, tokens generated, tokensPerSecond (after the first token), timeToFirstTokenMs, the backend and quantisation actually used (with fallbackReason when WebGPU was not used), loadMs, downloadedBytes vs fromCache. These are SMALL models (0.1–1.7 B parameters): good for rewriting, summarising a paragraph, classification, extraction to a format, simple Q&A; weak at arithmetic, long reasoning and obscure facts — check what they say. DOWNLOADS on first use of a model, from huggingface.co: smollm2-135m 120 MB (139 MB on CPU), smollm2-360m 275 MB (367 MB on CPU), qwen2.5-0.5b 793 MB (519 MB on CPU), smollm2-1.7b 1111 MB (WebGPU only); plus the 29 MB runtime from this site. Speed measured on a desktop PC (RTX-class GPU, fast CPU core): on WebGPU about 100 tokens/s for the SmolLM2 models and 40 for qwen2.5-0.5b, plus 0.2–1 s of shader compilation on the first call after a load; on CPU (single-threaded WASM — this host cannot enable threads) 35 / 18 / 13 tokens/s for smollm2-135m / smollm2-360m / qwen2.5-0.5b, several times less on a laptop or phone; smollm2-1.7b is refused on CPU. The CPU builds are 8-bit quantised and make slightly more mistakes than the WebGPU builds. One language model stays loaded at a time, in its own worker next to the speech model's (model.status / model.unload); switching models restarts that worker and loads the other from cache in 1–4 s. Runs entirely in this page: the audio/prompt and the result never leave the browser. The only network traffic is the one-time download of model files from huggingface.co (and its CDN hosts under hf.co), cached afterwards in the browser (Cache API).",
    "inputSchema": {
     "properties": {
      "messages": {
@@ -9823,8 +9832,8 @@
      },
      "model": {
       "type": "string",
-      "default": "qwen2.5-0.5b",
-      "description": "Which language model: smollm2-135m (135M parameters, 120 MB) | smollm2-360m (360M parameters, 275 MB) | qwen2.5-0.5b (494M parameters, 490 MB) | smollm2-1.7b (1.7B parameters, 1111 MB) | qwen2.5-1.5b (1.5B parameters, 1229 MB). Or any Hugging Face repo id holding a Transformers.js-compatible ONNX causal LM with a chat template (an onnx/ folder with model_q4f16.onnx etc., e.g. onnx-community/…) — untested repos may fail to load. model.list shows licences, memory needs and what this machine can run."
+      "default": "smollm2-360m",
+      "description": "Which language model: smollm2-135m (135M parameters, 120 MB) | smollm2-360m (360M parameters, 275 MB) | qwen2.5-0.5b (494M parameters, 793 MB) | smollm2-1.7b (1.7B parameters, 1111 MB). Or any Hugging Face repo id holding a Transformers.js-compatible ONNX causal LM with a chat template (an onnx/ folder with model_q4f16.onnx etc., e.g. onnx-community/…) — untested repos may fail to load. model.list shows licences, memory needs and what this machine can run."
      },
      "system": {
       "type": "string",
@@ -9901,7 +9910,7 @@
        "bnb4"
       ],
       "default": "auto",
-      "description": "Weight quantisation to load. auto picks per backend: speech → fp32 encoder + q4 decoder on WebGPU, q8 on CPU; llm → q4f16 on WebGPU with the shader-f16 feature, q4 without it, q8 on CPU. Set it only to trade size for quality or for a repo that lacks the default file; the size figures in descriptions apply to auto."
+      "description": "Weight quantisation to load. auto picks per backend: speech → fp32 encoder + q4 decoder on WebGPU, q8 on CPU; llm → q4f16 on WebGPU with the shader-f16 feature (q4 without it, and always q4 for the Qwen2.5 models and for uncatalogued repos, whose 16-bit exports can produce garbage on WebGPU), q8 on CPU. Set it only to trade size for quality or for a repo that lacks the default file; the size figures in descriptions apply to auto."
      },
      "maxChars": {
       "type": "integer",
@@ -9926,7 +9935,7 @@
   {
    "name": "llm.generate",
    "room": "mind",
-   "description": "Run a small instruction-tuned language model in the browser on one prompt and get its text back. Use it for a single self-contained instruction (\"summarise this\", \"extract the dates as JSON\", \"rewrite politely\") when a round trip to a hosted model is unwanted or the text must stay on this machine. By default the prompt is wrapped as a user turn in the model's chat template (with the optional system prompt); raw=true feeds the prompt verbatim for plain text continuation. For a multi-turn conversation use llm.chat. Returns the text, finishReason (eos = the model ended its turn, length = maxTokens reached, stop = a stop string matched), promptTokens, tokens generated, tokensPerSecond (after the first token), timeToFirstTokenMs, the backend and quantisation actually used (with fallbackReason when WebGPU was not used), loadMs, downloadedBytes vs fromCache. These are SMALL models (0.1–1.7 B parameters): good for rewriting, summarising a paragraph, classification, extraction to a format, simple Q&A; weak at arithmetic, long reasoning and obscure facts — check what they say. DOWNLOADS on first use of a model, from huggingface.co: smollm2-135m 120 MB (139 MB on CPU), smollm2-360m 275 MB (367 MB on CPU), qwen2.5-0.5b 490 MB (519 MB on CPU), smollm2-1.7b 1111 MB (WebGPU only), qwen2.5-1.5b 1229 MB (WebGPU only); plus the 29 MB runtime from this site. Speed: tens to a few hundred tokens/s on a desktop GPU via WebGPU; on CPU (single-threaded WASM) only smollm2-135m, smollm2-360m and qwen2.5-0.5b are allowed, at roughly 2–15 tokens/s, and the 1.5–1.7 B models are refused. One language model stays loaded at a time (model.status / model.unload). Runs entirely in this page: the audio/prompt and the result never leave the browser. The only network traffic is the one-time download of model files from huggingface.co (and its CDN hosts under hf.co), cached afterwards in the browser (Cache API).",
+   "description": "Run a small instruction-tuned language model in the browser on one prompt and get its text back. Use it for a single self-contained instruction (\"summarise this\", \"extract the dates as JSON\", \"rewrite politely\") when a round trip to a hosted model is unwanted or the text must stay on this machine. By default the prompt is wrapped as a user turn in the model's chat template (with the optional system prompt); raw=true feeds the prompt verbatim for plain text continuation. For a multi-turn conversation use llm.chat. Returns the text, finishReason (eos = the model ended its turn, length = maxTokens reached, stop = a stop string matched), promptTokens, tokens generated, tokensPerSecond (after the first token), timeToFirstTokenMs, the backend and quantisation actually used (with fallbackReason when WebGPU was not used), loadMs, downloadedBytes vs fromCache. These are SMALL models (0.1–1.7 B parameters): good for rewriting, summarising a paragraph, classification, extraction to a format, simple Q&A; weak at arithmetic, long reasoning and obscure facts — check what they say. DOWNLOADS on first use of a model, from huggingface.co: smollm2-135m 120 MB (139 MB on CPU), smollm2-360m 275 MB (367 MB on CPU), qwen2.5-0.5b 793 MB (519 MB on CPU), smollm2-1.7b 1111 MB (WebGPU only); plus the 29 MB runtime from this site. Speed measured on a desktop PC (RTX-class GPU, fast CPU core): on WebGPU about 100 tokens/s for the SmolLM2 models and 40 for qwen2.5-0.5b, plus 0.2–1 s of shader compilation on the first call after a load; on CPU (single-threaded WASM — this host cannot enable threads) 35 / 18 / 13 tokens/s for smollm2-135m / smollm2-360m / qwen2.5-0.5b, several times less on a laptop or phone; smollm2-1.7b is refused on CPU. The CPU builds are 8-bit quantised and make slightly more mistakes than the WebGPU builds. One language model stays loaded at a time, in its own worker next to the speech model's (model.status / model.unload); switching models restarts that worker and loads the other from cache in 1–4 s. Runs entirely in this page: the audio/prompt and the result never leave the browser. The only network traffic is the one-time download of model files from huggingface.co (and its CDN hosts under hf.co), cached afterwards in the browser (Cache API).",
    "inputSchema": {
     "properties": {
      "prompt": {
@@ -9944,8 +9953,8 @@
      },
      "model": {
       "type": "string",
-      "default": "qwen2.5-0.5b",
-      "description": "Which language model: smollm2-135m (135M parameters, 120 MB) | smollm2-360m (360M parameters, 275 MB) | qwen2.5-0.5b (494M parameters, 490 MB) | smollm2-1.7b (1.7B parameters, 1111 MB) | qwen2.5-1.5b (1.5B parameters, 1229 MB). Or any Hugging Face repo id holding a Transformers.js-compatible ONNX causal LM with a chat template (an onnx/ folder with model_q4f16.onnx etc., e.g. onnx-community/…) — untested repos may fail to load. model.list shows licences, memory needs and what this machine can run."
+      "default": "smollm2-360m",
+      "description": "Which language model: smollm2-135m (135M parameters, 120 MB) | smollm2-360m (360M parameters, 275 MB) | qwen2.5-0.5b (494M parameters, 793 MB) | smollm2-1.7b (1.7B parameters, 1111 MB). Or any Hugging Face repo id holding a Transformers.js-compatible ONNX causal LM with a chat template (an onnx/ folder with model_q4f16.onnx etc., e.g. onnx-community/…) — untested repos may fail to load. model.list shows licences, memory needs and what this machine can run."
      },
      "system": {
       "type": "string",
@@ -10022,7 +10031,7 @@
        "bnb4"
       ],
       "default": "auto",
-      "description": "Weight quantisation to load. auto picks per backend: speech → fp32 encoder + q4 decoder on WebGPU, q8 on CPU; llm → q4f16 on WebGPU with the shader-f16 feature, q4 without it, q8 on CPU. Set it only to trade size for quality or for a repo that lacks the default file; the size figures in descriptions apply to auto."
+      "description": "Weight quantisation to load. auto picks per backend: speech → fp32 encoder + q4 decoder on WebGPU, q8 on CPU; llm → q4f16 on WebGPU with the shader-f16 feature (q4 without it, and always q4 for the Qwen2.5 models and for uncatalogued repos, whose 16-bit exports can produce garbage on WebGPU), q8 on CPU. Set it only to trade size for quality or for a repo that lacks the default file; the size figures in descriptions apply to auto."
      },
      "maxChars": {
       "type": "integer",
@@ -10058,12 +10067,12 @@
   {
    "name": "model.download",
    "room": "mind",
-   "description": "Download a model's files from the Hugging Face Hub into this browser's cache ahead of time, without loading it — so a later speech.transcribe / llm.* call starts from cache (fromCache: true) and works offline. Streams straight to the Cache API (the weights are never held in memory), reports progress, and finishes with a report: files, bytes downloaded vs already cached, seconds, MB/s, the hosts used. Fetches exactly the variant this machine will run (backend=auto: the WebGPU quantisation when a GPU adapter exists, else the CPU one; pass backend=cpu or gpu to pre-fetch the other). Sizes fetched from huggingface.co: whisper-tiny 122/44, whisper-tiny.en 122/44, whisper-base 209/80, whisper-base.en 209/80, whisper-small 589/252, whisper-small.en 589/252, smollm2-135m 120/139, smollm2-360m 275/367, qwen2.5-0.5b 490/519, smollm2-1.7b 1111, qwen2.5-1.5b 1229 MB (WebGPU/CPU variant; one number = WebGPU only). Also asks the browser to make this origin's storage persistent so the cache is not evicted under disk pressure (Firefox may show a permission prompt; Chromium decides silently). Not required before using a model: the other tools download on demand. Only model files are requested; nothing is uploaded.",
+   "description": "Download a model's files from the Hugging Face Hub into this browser's cache ahead of time, without loading it — so a later speech.transcribe / llm.* call starts from cache (fromCache: true) and works offline. Streams straight to the Cache API (the weights are never held in memory), reports progress, and finishes with a report: files, bytes downloaded vs already cached, seconds, MB/s, the hosts used. Fetches exactly the variant this machine will run (backend=auto: the WebGPU quantisation when a GPU adapter exists, else the CPU one; pass backend=cpu or gpu to pre-fetch the other). Sizes fetched from huggingface.co: whisper-tiny 122/44, whisper-tiny.en 122/44, whisper-base 209/80, whisper-base.en 209/80, whisper-small 589/252, whisper-small.en 589/252, smollm2-135m 120/139, smollm2-360m 275/367, qwen2.5-0.5b 793/519, smollm2-1.7b 1111 MB (WebGPU/CPU variant; one number = WebGPU only). Also asks the browser to make this origin's storage persistent so the cache is not evicted under disk pressure (Firefox shows a permission prompt, and the tool does not wait for the answer; Chromium decides silently). Not required before using a model: the other tools download on demand. Only model files are requested; nothing is uploaded.",
    "inputSchema": {
     "properties": {
      "model": {
       "type": "string",
-      "description": "Catalogue id (whisper-tiny, whisper-tiny.en, whisper-base, whisper-base.en, whisper-small, whisper-small.en, smollm2-135m, smollm2-360m, qwen2.5-0.5b, smollm2-1.7b, qwen2.5-1.5b) or a Hugging Face repo id \"org/name\" with Transformers.js ONNX files"
+      "description": "Catalogue id (whisper-tiny, whisper-tiny.en, whisper-base, whisper-base.en, whisper-small, whisper-small.en, smollm2-135m, smollm2-360m, qwen2.5-0.5b, smollm2-1.7b) or a Hugging Face repo id \"org/name\" with Transformers.js ONNX files"
      },
      "task": {
       "type": "string",
@@ -10097,7 +10106,7 @@
        "bnb4"
       ],
       "default": "auto",
-      "description": "Weight quantisation to load. auto picks per backend: speech → fp32 encoder + q4 decoder on WebGPU, q8 on CPU; llm → q4f16 on WebGPU with the shader-f16 feature, q4 without it, q8 on CPU. Set it only to trade size for quality or for a repo that lacks the default file; the size figures in descriptions apply to auto."
+      "description": "Weight quantisation to load. auto picks per backend: speech → fp32 encoder + q4 decoder on WebGPU, q8 on CPU; llm → q4f16 on WebGPU with the shader-f16 feature (q4 without it, and always q4 for the Qwen2.5 models and for uncatalogued repos, whose 16-bit exports can produce garbage on WebGPU), q8 on CPU. Set it only to trade size for quality or for a repo that lacks the default file; the size figures in descriptions apply to auto."
      },
      "wordTimestamps": {
       "type": "boolean",
@@ -10159,7 +10168,7 @@
   {
    "name": "model.status",
    "room": "mind",
-   "description": "What is loaded in memory right now: each loaded model with its backend (webgpu or wasm), quantisation, weight bytes, estimated memory, load time, number of runs and idle time; whether the inference engine is running (it lives in a dedicated worker, started on first use), whether it is busy, the runtime versions, which cross-origin hosts it has contacted in this page (model downloads only), the WebGPU adapter and whether its device was lost. Use it to see why memory is high, to confirm a model.unload, or to check which backend a model ended up on. Does not start anything.",
+   "description": "What is loaded in memory right now: each loaded model with its backend (webgpu or wasm), quantisation, weight bytes, estimated memory, load time, number of runs and idle time; which inference workers are running (one dedicated worker per task — speech, llm — started on first use and holding one model each), whether one is busy, the runtime versions, which cross-origin hosts it has contacted in this page (model downloads only), the WebGPU adapter and whether its device was lost. Use it to see why memory is high, to confirm a model.unload, or to check which backend a model ended up on. Does not start anything.",
    "inputSchema": {
     "properties": {},
     "type": "object"
@@ -10170,7 +10179,7 @@
   {
    "name": "model.unload",
    "room": "mind",
-   "description": "Free a loaded model — its ONNX sessions, WASM heap and GPU buffers — without touching the browser cache (loading it again is fast and needs no download). With no argument every loaded model is released. When nothing remains loaded the inference worker itself is terminated, which is the only way to hand all GPU memory and the WASM heap back to the browser; the next speech/llm call starts a new one (a few hundred ms plus the model load). Use it after a job, before loading a large model, or when the GPU is needed elsewhere. Returns what was unloaded and what is still loaded.",
+   "description": "Free a loaded model — its ONNX sessions, WASM heap, GPU buffers and GPU device — without touching the browser cache (loading it again needs no download: 1–4 s from cache). With no argument every loaded model is released. Each task (speech, llm) runs in its own dedicated worker holding one model; unloading terminates that worker, which is the only way to hand all GPU memory and the WASM heap back to the browser, and the next speech/llm call starts a fresh one. Use it after a job, before loading a large model, or when the GPU is needed elsewhere. Returns what was unloaded and what is still loaded.",
    "inputSchema": {
     "properties": {
      "model": {
@@ -11647,7 +11656,7 @@
   {
    "name": "speech.transcribe",
    "room": "mind",
-   "description": "Speech-to-text with OpenAI Whisper running in the browser: turn any audio or video file in the VFS into text, with timestamps, in 99 languages (auto-detected), or translate foreign speech into English text. Use it for recordings, voice notes, podcasts, meetings, video soundtracks and subtitles. Any length: the audio is decoded to 16 kHz mono and walked through in 30 s windows, each new window starting where the last complete segment ended, so sentences are not cut and times are continuous. Always writes <name>.transcript.txt; on request also .srt and .vtt subtitles and a .json with every segment {start,end,text} (and words when timestamps=word). Returns the text (capped by maxChars, with a truncated flag), the language (and detection candidates), audio duration, real-time factor (processing time ÷ audio time; 0.1 = ten times faster than real time), the backend and quantisation actually used, load/run timings, downloadedBytes vs fromCache, and the output file stats. DOWNLOADS on first use of a model, from huggingface.co: whisper-tiny 122 MB (44 MB on CPU), whisper-tiny.en 122 MB (44 MB on CPU), whisper-base 209 MB (80 MB on CPU), whisper-base.en 209 MB (80 MB on CPU), whisper-small 589 MB (252 MB on CPU), whisper-small.en 589 MB (252 MB on CPU); plus the 29 MB runtime from this site. Speed: on a desktop GPU with WebGPU whisper-base runs roughly 15–30× faster than real time; on CPU (single-threaded WASM, no SharedArrayBuffer on this host) expect whisper-tiny around 3–5× faster than real time, whisper-base about 2×, whisper-small slower than real time. Limits: greedy decoding without the reference implementation's temperature fallback, so long silences or music can yield repeated or invented text; no speaker labels. Runs entirely in this page: the audio/prompt and the result never leave the browser. The only network traffic is the one-time download of model files from huggingface.co (and its CDN hosts under hf.co), cached afterwards in the browser (Cache API).",
+   "description": "Speech-to-text with OpenAI Whisper running in the browser: turn any audio or video file in the VFS into text, with timestamps, in 99 languages (auto-detected), or translate foreign speech into English text. Use it for recordings, voice notes, podcasts, meetings, video soundtracks and subtitles. Any length: the audio is decoded to 16 kHz mono and walked through in 30 s windows, each new window starting where the last complete segment ended, so sentences are not cut and times are continuous. Always writes <name>.transcript.txt; on request also .srt and .vtt subtitles and a .json with every segment {start,end,text} (and words when timestamps=word). Returns the text (capped by maxChars, with a truncated flag), the language (and detection candidates), audio duration, real-time factor (processing time ÷ audio time; 0.1 = ten times faster than real time), the backend and quantisation actually used, load/run timings, downloadedBytes vs fromCache, and the output file stats. DOWNLOADS on first use of a model, from huggingface.co: whisper-tiny 122 MB (44 MB on CPU), whisper-tiny.en 122 MB (44 MB on CPU), whisper-base 209 MB (80 MB on CPU), whisper-base.en 209 MB (80 MB on CPU), whisper-small 589 MB (252 MB on CPU), whisper-small.en 589 MB (252 MB on CPU); plus the 29 MB runtime from this site. Speed measured on a desktop PC (RTX-class GPU, fast CPU core) on a 90 s clip: with WebGPU whisper-tiny runs 23×, whisper-base 19× and whisper-small 13× faster than real time (the first window after a load adds 0.5–3 s of shader compilation); on CPU (single-threaded WASM — this host cannot enable threads) whisper-tiny 12×, whisper-base 6.5×, whisper-small 2.3×; expect several times less on a laptop or phone. Word timestamps take about three times as long. Limits: greedy decoding; a window in which the decoder loops on a phrase is detected and decoded again with temperature 0.4 / 0.8 (reported as redecodedWindows, and repetitiveWindows when that did not help), but there is no no-speech or log-probability filter, so long silences or music can still yield invented text; word mode has no loop check; no speaker labels. Runs entirely in this page: the audio/prompt and the result never leave the browser. The only network traffic is the one-time download of model files from huggingface.co (and its CDN hosts under hf.co), cached afterwards in the browser (Cache API).",
    "inputSchema": {
     "properties": {
      "input": {
@@ -11729,7 +11738,7 @@
        "bnb4"
       ],
       "default": "auto",
-      "description": "Weight quantisation to load. auto picks per backend: speech → fp32 encoder + q4 decoder on WebGPU, q8 on CPU; llm → q4f16 on WebGPU with the shader-f16 feature, q4 without it, q8 on CPU. Set it only to trade size for quality or for a repo that lacks the default file; the size figures in descriptions apply to auto."
+      "description": "Weight quantisation to load. auto picks per backend: speech → fp32 encoder + q4 decoder on WebGPU, q8 on CPU; llm → q4f16 on WebGPU with the shader-f16 feature (q4 without it, and always q4 for the Qwen2.5 models and for uncatalogued repos, whose 16-bit exports can produce garbage on WebGPU), q8 on CPU. Set it only to trade size for quality or for a repo that lacks the default file; the size figures in descriptions apply to auto."
      },
      "maxChars": {
       "type": "integer",

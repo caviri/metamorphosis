@@ -237,10 +237,11 @@ register({
 
 register({
   name: 'claude.audio',
-  description: 'Turn audio into what a model can read: a labelled spectrogram and a waveform image (fitted to the resolution tier) plus measured numbers — duration, loudness, peaks, dominant frequencies, tempo and pitch where detectable. There is no speech-to-text here: for spoken content supply a transcript. Returns the image files, token costs and the measurements.',
-  schema: { properties: { input: { type: 'string', description: 'VFS path of the audio file' }, tier: TIER }, required: ['input'] },
-  async run({ input, tier }) {
-    const result = { outputs: [], measurements: {}, notes: ['no speech recognition is available in this forge — a spectrogram shows structure, not words'] };
+  description: 'Turn audio into what a model can read: a labelled spectrogram and a waveform image (fitted to the resolution tier) plus measured numbers — duration, loudness, peaks, dominant frequencies, tempo and pitch where detectable. For spoken content set transcribe=true: it runs speech.transcribe (Whisper in the browser; the first use downloads the model weights from the Hugging Face Hub — about 80–210 MB for the default model — and caches them) and adds the transcript as a text part. Returns the image files, the transcript if asked, token costs and the measurements.',
+  schema: { properties: { input: { type: 'string', description: 'VFS path of the audio file' }, transcribe: { type: 'boolean', default: false, description: 'Also transcribe speech with Whisper (downloads a model on first use)' }, language: { type: 'string', description: 'Spoken language code for the transcript, e.g. "en", "es" (default: auto-detect — less reliable)' }, tier: TIER }, required: ['input'] },
+  async run({ input, tier, transcribe, language }) {
+    const result = { outputs: [], measurements: {}, notes: [] };
+    if (transcribe) { try { const r = await M.run('speech.transcribe', { input, ...(language ? { language } : {}) }); const o = outs(r).find((x) => /\.txt$/.test(x.path)) || outs(r)[0]; if (o) result.outputs.push({ ...o, role: 'transcript', tokens: textTokens(vfs.text(o.path)) }); result.measurements.speech = { language: r.language, model: r.model, backend: r.backend }; } catch (e) { result.notes.push(`transcript: ${e.message}`); } } else result.notes.push('a spectrogram shows structure, not words — pass transcribe=true for a Whisper transcript of speech');
     for (const [tool, role] of [['audio.spectrogram', 'spectrogram'], ['audio.waveform', 'waveform']]) { try { const r = await M.run(tool, { input }); const f = await fitImage(outs(r)[0].path, { tier }); result.outputs.push({ ...f.output, role, tokens: f.tokens }); } catch (e) { result.notes.push(`${tool}: ${e.message}`); } }
     for (const tool of ['audio.info', 'audio.stats', 'audio.spectrum', 'audio.tempo']) { try { const r = await M.run(tool, { input }); delete r.output; delete r.outputs; result.measurements[tool.split('.')[1]] = r; } catch (e) { result.notes.push(`${tool}: ${e.message}`); } }
     result.tokens = result.outputs.reduce((n, o) => n + o.tokens, 0);
