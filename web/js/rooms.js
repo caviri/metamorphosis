@@ -14,6 +14,7 @@ export const ROOMS = [
   { id: 'data',     gr: 'ἀριθμός',   domains: ['data'],                            about: 'tables and structured data: CSV / JSON / YAML / TOML / XML / XLSX / Markdown conversion, query, stats, schema, diff, charts' },
   { id: 'bytes',    gr: 'στοιχεῖα',  domains: ['file', 'hash', 'encode', 'archive'], about: 'raw bytes: identify by magic number, entropy, strings, binary diff, hashes, encodings, zip / tar / gzip' },
   { id: 'doc',      gr: 'λόγος',     domains: ['doc', 'text'],                     about: 'documents and text: docx / pptx / epub / html / ipynb / eml to Markdown and back, subtitles, chunking, token estimates, grep, diff, redaction' },
+  { id: 'mind',     gr: 'ψυχή',      domains: ['model', 'speech', 'llm'],          about: 'neural models that run in the page on WebGPU: speech-to-text (Whisper) and small language models; weights are downloaded on demand and cached in the browser' },
   { id: 'claude',   gr: 'νοῦς',      domains: ['claude'],                          about: 'make any file model-ready: fit images, PDFs, audio, video, maps and tables to what a Claude model can ingest' },
 ];
 
@@ -27,6 +28,7 @@ export const DOMAIN_MODULE = {
   pdf: 'pdf', video: 'video', audio: 'audio', geo: 'geo',
   data: 'data', file: 'data', hash: 'data', encode: 'data', archive: 'data',
   doc: 'doc', text: 'doc', claude: 'claude',
+  model: 'mind', speech: 'mind', llm: 'mind',
 };
 export const ALL_MODULES = [...new Set(Object.values(DOMAIN_MODULE))];
 

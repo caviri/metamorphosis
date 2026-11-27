@@ -176,6 +176,8 @@ export async function domToMarkdown(root, opts = {}) {
   td.use([gfm.taskListItems]);
   td.addRule('strike', { filter: ['del', 's', 'strike'], replacement: (content) => (content.trim() ? `~~${content}~~` : content) });
   td.addRule('hr', { filter: 'hr', replacement: () => '\n\n---\n\n' });
+  // keep super/subscript as inline HTML (x<sup>2</sup>, H<sub>2</sub>O); footnote-style sup links stay plain links
+  td.addRule('supsub', { filter: ['sup', 'sub'], replacement: (content, node) => (!content.trim() || node.querySelector('a') || /^\\?\[/.test(content.trim()) ? content : `<${node.nodeName.toLowerCase()}>${content}</${node.nodeName.toLowerCase()}>`) });
   td.remove(['script', 'style', 'noscript', 'template', 'head', 'title']);
   td.addRule('pre', { filter: 'pre', replacement: (content, node) => { const text = (node.textContent || '').replace(/\n+$/, '').replace(/^\n/, ''); if (!text.trim()) return ''; const f = fenceFor(text); return `\n\n${f}${langOf(node)}\n${text}\n${f}\n\n`; } });
   td.addRule('li', {

@@ -98,11 +98,11 @@ function scrubDecrypted(L, doc, bytes) {
 const entriesOf = (x) => (!x ? [] : x instanceof Map ? [...x.entries()] : Object.entries(x));
 const hasFlag = (x, f) => (!x ? undefined : x instanceof Set ? x.has(f) : Array.isArray(x) ? x.includes(f) : undefined);
 
-async function withJs(path, password, fn) {
+async function withJs(path, password, fn, docOpts = {}) {
   const pdfjs = await pdfjsLib(); const bytes = vfs.read(path); assertPdf(bytes, path);
   const task = pdfjs.getDocument({
     data: bytes.slice(), password: password || undefined, verbosity: 0,
-    cMapUrl: V('pdfjs/cmaps/'), cMapPacked: true, standardFontDataUrl: V('pdfjs/standard_fonts/'), wasmUrl: V('pdfjs/wasm/'), iccUrl: V('pdfjs/iccs/'),
+    cMapUrl: V('pdfjs/cmaps/'), cMapPacked: true, standardFontDataUrl: V('pdfjs/standard_fonts/'), wasmUrl: V('pdfjs/wasm/'), iccUrl: V('pdfjs/iccs/'), ...docOpts,
   });
   let doc;
   try { doc = await task.promise; } catch (e) {
@@ -283,6 +283,7 @@ async function pageLines(pdfjs, page, { order = 'stream', fonts = false } = {}) 
       let size = cur.size, best = 0; for (const [k, v] of cur.sizes) if (v > best) { best = v; size = k; }
       let font = null; best = 0; for (const [k, v] of cur.fonts) if (v > best) { best = v; font = k; }
       const fi = infoOf(font);
+      if (fi.bold && segs.length === 2 && SECTION_NO.test(segs[0].text) && /^[A-Z]/.test(segs[1].text)) { segs[1] = { x: segs[0].x, text: `${segs[0].text} ${segs[1].text}` }; segs.shift(); } // "3.2.1   Title" set in bold is one heading, not two cells
       lines.push({ x: segs[0].x, xEnd: cur.xEnd, y: cur.y, size, ang: cur.ang, segs, text: segs.map((s) => s.text).join('   '), mono: fi.mono, bold: fi.bold, italic: fi.italic });
     }
     cur = null; pendingSpace = false;
@@ -348,6 +349,7 @@ function stripRepeated(pages) {
 }
 
 const MARKER = /^([•◦▪■●○‣·∙*\-–—]|\(?\d{1,3}[.)])$/;
+const SECTION_NO = /^[0-9]{1,3}([.][0-9]{1,3}){0,4}[.]?$/;
 const BULLET = /^([•◦▪■●○‣·∙*\-–—])\s+(.*)$/;
 const NUMBERED = /^(\(?\d{1,3}[.)])\s+(.*)$/;
 
@@ -369,7 +371,7 @@ function pagesToMarkdown(pages, { pageMarkers = false, tables = true } = {}) {
   const headingLevel = (l, next) => {
     if (l.text.length > 200 || isList(l) || l.segs.length > 2) return 0;
     const lv = levelOf(l); if (lv) return lv;
-    if (l.bold && !l.mono && l.segs.length === 1 && l.text.length <= 90 && !/[.,;:]$/.test(l.text) && /[A-Za-z\u00c0-\uffff]/.test(l.text) && (!next || !next.bold)) return boldLevel;
+    if (l.bold && !l.mono && l.segs.length === 1 && l.text.length >= 3 && l.text.length <= 90 && /^[A-Z0-9]/.test(l.text) && !/^(Figure|Fig[.]|Table|Listing|Algorithm) /.test(l.text) && !/[.,;:]$/.test(l.text) && /[A-Za-z\u00c0-\uffff]/.test(l.text) && (!next || !next.bold)) return boldLevel;
     return 0;
   };
   const esc = (s) => s.replace(/\|/g, '\\|');
@@ -448,7 +450,7 @@ async function extractPages(input, password, pagesSpec, opts, ctx, tag = 'readin
       ctx?.progress?.((k + 1) / idx.length, `${tag} page ${idx[k] + 1}`);
     }
     return { pages, numPages: doc.numPages };
-  });
+  }, opts?.fonts ? { fontExtraProperties: true } : {}); // real font names (bold / italic / monospace) are only exposed on request
 }
 
 // ─────────────────────────────────────────────────────────────── info ──

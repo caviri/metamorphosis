@@ -23,6 +23,8 @@
     await M.call('sys.rooms')             // the pages of this site; each holds ONE tool family
     await M.call('sys.tools')             // the tools of the room you are in
     await M.call('sys.help', {tool})      // schema of one tool
+    await M.call('sys.diag')              // what this browser can and cannot do, per room
+    await M.call('sys.log', {level:'warn'})   // what went wrong, with timings
     await M.call(name, args)              // → {ok, tool, ms, result | error}
   Tools are split across rooms (image/ analysis/ synth/ vision/ pdf/ video/ audio/ geo/ data/ bytes/ doc/ claude/)
   so no page floods your context. Navigate to a room to get its tools; files persist across rooms.
@@ -38,6 +40,8 @@
     <p class="epi">πάντα μεταβάλλεται · οὐδὲν ἀπόλλυται</p>
   </div>
   <dl id="chips" aria-label="machine state">
+    <div><dt>ὀχετός</dt><dd id="chip-browser">…</dd></div>
+    <div id="agent-chip" title="an agent is calling tools on this page"><dt>πράκτωρ</dt><dd id="chip-agent">—</dd></div>
     <div><dt>gpu</dt><dd id="chip-gpu">…</dd></div>
     <div><dt>wasm</dt><dd id="chip-wasm">…</dd></div>
     <div><dt>webmcp</dt><dd id="chip-mcp">…</dd></div>
@@ -45,6 +49,7 @@
   </dl>
 </header>
 <nav id="rooms" aria-label="rooms"></nav>
+<div id="work" role="progressbar" aria-label="tool call progress" aria-valuemin="0" aria-valuemax="100" hidden><i id="work-bar"></i><span id="work-text"></span></div>
 
 <main>
   <section id="term" aria-label="terminal">
@@ -71,6 +76,7 @@
 
 <footer>
   <span>ἄνθρωπος μηδεὶς εἰσίτω</span>
+  <button type="button" id="diag-flag" hidden title="errors and warnings — click to read the log"></button>
   <span id="busy" hidden>▚ <span id="busy-what"></span></span>
   <span><a href="https://h4ck1ng.science" rel="noopener">h4ck1ng.science</a> · <a href="llms.txt">llms.txt</a> · <a href="tools.json">tools.json</a> · <code>window.M</code></span>
 </footer>

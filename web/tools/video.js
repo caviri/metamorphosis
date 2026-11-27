@@ -30,10 +30,19 @@ const CONTAINERS = {
 const VIDEO_FORMATS = Object.keys(CONTAINERS);
 const VIDEO_CODECS = ['auto', 'h264', 'hevc', 'vp8', 'vp9', 'av1', 'mpeg4', 'theora', 'prores'];
 const AUDIO_CODECS = ['auto', 'aac', 'opus', 'mp3', 'vorbis', 'flac', 'pcm'];
-const FF_V = { h264: ['libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p'], hevc: ['libx265', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1'], vp9: ['libvpx-vp9', '-deadline', 'realtime', '-cpu-used', '8', '-pix_fmt', 'yuv420p'], vp8: ['libvpx', '-deadline', 'realtime', '-cpu-used', '8', '-pix_fmt', 'yuv420p'], mpeg4: ['mpeg4'], theora: ['libtheora'], prores: ['prores_ks', '-profile:v', '2'] };
-const FF_CRF = { h264: [36, 31, 26, 22, 18], hevc: [38, 33, 28, 24, 20], vp9: [48, 42, 35, 30, 24], vp8: [50, 40, 30, 20, 10] };
+// Encoders that work in the single-thread ffmpeg.wasm build. Verified broken there and therefore absent: libvpx-vp9 (lossy
+// encoding crashes with "memory access / table index out of bounds"), libx265 (never returns), AV1 (no encoder compiled in).
+const FF_V = { h264: ['libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p'], vp8: ['libvpx', '-deadline', 'realtime', '-cpu-used', '8', '-pix_fmt', 'yuv420p'], mpeg4: ['mpeg4'], theora: ['libtheora'], prores: ['prores_ks', '-profile:v', '2'] };
+const FF_BROKEN = { vp9: 'its libvpx-vp9 encoder crashes in WebAssembly', hevc: 'its libx265 encoder hangs without threads', av1: 'it has no AV1 encoder' };
+const ffVideoCodec = (wanted, cont) => {
+  if (wanted && FF_BROKEN[wanted]) throw new Error(`the ffmpeg.wasm backend cannot encode ${wanted} (${FF_BROKEN[wanted]}) — use backend=webcodecs for ${wanted}, or one of: ${cont.v.filter((c) => FF_V[c]).join(', ')}`);
+  const c = wanted || cont.v.find((x) => FF_V[x]);
+  if (!c || !FF_V[c]) throw new Error(`the ffmpeg backend has no video encoder for this container${wanted ? ` and codec ${wanted}` : ''}`);
+  return c;
+};
+const FF_CRF = { h264: [36, 31, 26, 22, 18], vp8: [50, 40, 30, 20, 10] };
 const FF_Q = { mpeg4: [20, 12, 7, 4, 2], theora: [2, 4, 6, 8, 10] };
-const FF_A = { aac: ['aac'], opus: ['libopus'], mp3: ['libmp3lame'], vorbis: ['libvorbis'], flac: ['flac'], pcm: ['pcm_s16le'] };
+const FF_A = { aac: ['aac'], opus: ['libopus', '-compression_level', '1'] /* higher levels crash in the wasm build */, mp3: ['libmp3lame'], vorbis: ['libvorbis'], flac: ['flac'], pcm: ['pcm_s16le'] };
 // audio-only targets
 const AUDIO_FORMATS = {
   wav: { mbf: 'WavOutputFormat', codecs: ['pcm'], ff: 'wav', mime: 'audio/wav' },
@@ -181,7 +190,9 @@ async function probeFF(path, ctx, forced = false) {
 /** unified description of a VFS media file. backend: auto | webcodecs | ffmpeg → {…, backend} */
 async function probeAny(path, ctx, { backend = 'auto', deep = false } = {}) {
   vfs.stat(path);
-  if (backend !== 'ffmpeg') {
+  // Ogg video (Theora) is invisible to the WebCodecs demuxer, which would report such a file as audio-only
+  if (backend === 'auto' && /^og[vx]$/.test(vfs.extOf(path))) backend = 'ffmpeg-auto';
+  if (backend !== 'ffmpeg' && backend !== 'ffmpeg-auto') {
     let info = null, err = null;
     try { info = await probeMB(path, { deep }); } catch (e) { err = e; }
     if (info) return { ...info, backend: 'webcodecs' };
@@ -197,7 +208,7 @@ const brief = (info) => (!info ? {} : {
 /** write an output file with duration/size metadata taken from a quick probe of the bytes; → {stat, info} */
 async function finish(path, bytes, mime) {
   let info = null;
-  try { info = await probeMB(bytes); } catch { /* not a container Mediabunny reads (avi, flv, gif…) */ }
+  if (!/^og[vx]$/.test(vfs.extOf(path))) try { info = await probeMB(bytes); } catch { /* not a container Mediabunny reads (avi, flv, gif…) */ }
   const meta = info ? { ...(info.duration ? { duration: info.duration } : {}), ...(info.video ? { width: info.video.width, height: info.video.height } : {}) } : {};
   const stat = await vfs.write(path, bytes, { meta, ...(mime ? { mime } : {}) });
   return { stat, info };
@@ -346,22 +357,20 @@ function ffVideoFilters(p, sv, vcodec) {
       else vf.push(`scale=${s.width}:${s.height}:force_original_aspect_ratio=decrease`, `pad=${s.width}:${s.height}:(ow-iw)/2:(oh-ih)/2`);
     } else vf.push(`scale=${s.width}:${s.height}`);
     vf.push('setsar=1');
-  } else if (['h264', 'hevc', 'vp9', 'vp8', 'theora'].includes(vcodec)) vf.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+  } else if (['h264', 'vp8', 'theora'].includes(vcodec)) vf.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
   if (p.fps) vf.push(`fps=${p.fps}`);
   return vf;
 }
 function ffCodecArgs(p, cont, sv, sa) {
   const args = []; let vcodec = null, acodec = null;
   if (sv) {
-    vcodec = p.vcodec || cont.v[0];
-    if (vcodec === 'av1') throw new Error('the ffmpeg.wasm build has no AV1 encoder — use backend=webcodecs for AV1, or pick h264/vp9/hevc');
-    if (!FF_V[vcodec]) throw new Error(`unknown video codec ${vcodec}`);
+    vcodec = ffVideoCodec(p.vcodec, cont);
     const vf = ffVideoFilters(p, sv, vcodec);
     if (vf.length) args.push('-vf', vf.join(','));
     args.push('-c:v', ...FF_V[vcodec]);
     const qi = QUALITIES.indexOf(p.quality || 'medium');
     if (p.vbitrate) args.push('-b:v', String(p.vbitrate));
-    else if (FF_CRF[vcodec]) { args.push('-crf', String(FF_CRF[vcodec][qi])); if (vcodec === 'vp9') args.push('-b:v', '0'); if (vcodec === 'vp8') args.push('-b:v', '4M'); }
+    else if (FF_CRF[vcodec]) { args.push('-crf', String(FF_CRF[vcodec][qi])); if (vcodec === 'vp8') args.push('-b:v', '4M'); }
     else if (FF_Q[vcodec]) args.push('-q:v', String(FF_Q[vcodec][qi]));
   } else args.push('-vn');
   if (sa) {
@@ -537,7 +546,10 @@ async function grabFrames(path, src, times, size, a, ctx, onFrame, span = [0, 1]
       const vt = await input.getPrimaryVideoTrack();
       if (!vt) throw new Error(`"${path}" has no video track`);
       if (!(await vt.canDecode())) throw new Error(`this browser cannot decode ${src.video?.codec || 'this'} video`);
-      const hw = await hwDecodable(vt), mode = HW[a.hardware || 'auto'];
+      const hw = await hwDecodable(vt); let mode = HW[a.hardware || 'auto'];
+      if (mode === 'no-preference' && hw) {      // auto: prove the hardware decoder on one frame, then use it (so the answer is definite)
+        try { if (await new lib.CanvasSink(vt, { width: 16, height: 16, fit: 'fill', poolSize: 1, decoderOptions: { hardwareAcceleration: 'prefer-hardware' } }).getCanvas(times[0])) mode = 'prefer-hardware'; } catch { /* stay on the browser's choice */ }
+      }
       const sink = new lib.CanvasSink(vt, { width: size.width, height: size.height, fit: 'fill', poolSize: 1, decoderOptions: { hardwareAcceleration: mode } });
       let i = 0, grabbed = 0;
       for await (const wcv of sink.canvasesAtTimestamps(times)) { if (wcv) { await onFrame(wcv.canvas, times[i], i, wcv.timestamp); grabbed++; } i++; prog(i); }
@@ -589,7 +601,7 @@ const P = {
   start: { type: 'number', minimum: 0, description: 'Start time in seconds (default 0)' },
   end: { type: 'number', minimum: 0, description: 'End time in seconds (default: end of file)' },
   quality: { type: 'string', enum: QUALITIES, description: 'Subjective quality preset; sets the bitrate from resolution and codec (WebCodecs) or the CRF (ffmpeg). Ignored when videoBitrate is given' },
-  videoCodec: { type: 'string', enum: VIDEO_CODECS, default: 'auto', description: 'auto = keep the source codec when it fits the container and nothing forces a re-encode, else the container default (mp4/mov/mkv: h264, webm: vp9). av1 needs WebCodecs; mpeg4, theora, prores need ffmpeg' },
+  videoCodec: { type: 'string', enum: VIDEO_CODECS, default: 'auto', description: 'auto = keep the source codec when it fits the container and nothing forces a re-encode, else the container default (mp4/mov/mkv: h264, webm: vp9). av1, hevc and vp9 are encoded by WebCodecs only (the ffmpeg build cannot); mpeg4, theora, prores by ffmpeg only' },
   audioCodec: { type: 'string', enum: AUDIO_CODECS, default: 'auto', description: 'auto = keep the source codec when possible, else the container default (mp4/mov/mkv: aac, webm: opus). vorbis needs ffmpeg' },
 };
 const RESIZE = {
@@ -645,7 +657,7 @@ register({
       out.audio[name] = { decode: dec, encode: enc || ['mp3', 'flac', 'aac'].includes(name) || name === 'vorbis', encoder: name === 'pcm' ? 'none (uncompressed)' : enc ? 'webcodecs' : ['mp3', 'flac', 'aac'].includes(name) ? 'bundled wasm (loaded on first use)' : name === 'vorbis' ? 'ffmpeg only' : null };
     }
     out.containers = { webcodecs: Object.keys(CONTAINERS).filter((k) => CONTAINERS[k].mbf), ffmpegOnly: Object.keys(CONTAINERS).filter((k) => !CONTAINERS[k].mbf), audio: Object.keys(AUDIO_FORMATS) };
-    const ff = { loaded: ffLoaded(), threads: false, sharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined' && !!globalThis.crossOriginIsolated, videoEncoders: Object.keys(FF_V), audioEncoders: Object.keys(FF_A), note: 'single-thread CPU build; no AV1 encoder and no AV1 decoder' };
+    const ff = { loaded: ffLoaded(), threads: false, sharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined' && !!globalThis.crossOriginIsolated, videoEncoders: Object.keys(FF_V), audioEncoders: Object.keys(FF_A), note: 'single-thread CPU build. Not usable in it: VP9 encoding (crashes), HEVC encoding (hangs), AV1 encoding/decoding (absent) — use the webcodecs backend for those; webm is written as VP8 by ffmpeg' };
     try { const r = await fetch(FF_URLS.wasm, { method: 'HEAD' }); ff.reachable = r.ok; ff.wasmBytes = Number(r.headers.get('content-length')) || null; } catch (e) { ff.reachable = false; ff.error = msgOf(e); }
     if (loadFfmpeg) {
       try { await ffLoad(ctx); const r = await ffJob(ctx, (job) => job.exec(['-hide_banner', '-version'], { allowFail: true })); ff.loaded = true; ff.version = (r.log.find((l) => /^ffmpeg version/.test(l)) || '').replace(/ Copyright.*/, '').trim() || null; } catch (e) { ff.loaded = false; ff.error = msgOf(e); }
@@ -815,8 +827,7 @@ register({
     });
     const ffEnc = (reason) => ffJob(ctx, async (job) => {
       const args = []; const fc = []; const fps = a.fps || first.video.fps || 30, sr = fa?.sampleRate || 48000;
-      const cont = CONTAINERS[format], vc = vcodec || cont.v[0], ac = cont.a[0];
-      if (!FF_V[vc] || vc === 'av1') throw new Error(`ffmpeg cannot encode ${vc}`);
+      const cont = CONTAINERS[format], vc = ffVideoCodec(vcodec, cont), ac = cont.a[0];
       infos.forEach((info, i) => {
         args.push('-i', job.input(a.inputs[i]));
         fc.push(`[${i}:v:0]scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease,pad=${size.width}:${size.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps},format=yuv420p[v${i}]`);
@@ -825,7 +836,7 @@ register({
       fc.push(`${infos.map((_, i) => `[v${i}]${anyAudio ? `[a${i}]` : ''}`).join('')}concat=n=${infos.length}:v=1:a=${anyAudio ? 1 : 0}[v]${anyAudio ? '[a]' : ''}`);
       const out = job.tmp(`out.${format}`);
       args.push('-filter_complex', fc.join(';'), '-map', '[v]', ...(anyAudio ? ['-map', '[a]', '-c:a', ...FF_A[ac], '-strict', '-2'] : []), '-c:v', ...FF_V[vc]);
-      if (FF_CRF[vc]) { args.push('-crf', String(FF_CRF[vc][QUALITIES.indexOf(a.quality)])); if (vc === 'vp9') args.push('-b:v', '0'); if (vc === 'vp8') args.push('-b:v', '4M'); }
+      if (FF_CRF[vc]) { args.push('-crf', String(FF_CRF[vc][QUALITIES.indexOf(a.quality)])); if (vc === 'vp8') args.push('-b:v', '4M'); }
       args.push('-f', cont.ff, ...(format === 'mp4' || format === 'mov' ? ['-movflags', '+faststart'] : []), out);
       await job.exec(args, { duration: total });
       return { bytes: await job.read(out), info: { backend: 'ffmpeg', hardwareAccelerated: false, videoReencoded: true, videoCodec: vc, ...(reason ? { fallbackReason: reason } : {}) } };
@@ -872,10 +883,10 @@ register({
       return pipelineWC([{ path: a.input, info: src, speed: a.factor }], { format, width: size.width, height: size.height, quality: a.quality, hardware: a.hardware, audio: keepAudio, sampleRate: src.audio?.sampleRate || 48000, channels: Math.min(2, src.audio?.channels || 2), maxFps: a.factor > 1 ? Math.max(fps, 24) : 0 }, ctx)
         .then((r) => ({ ...r, info: { ...r.info, audioMethod: keepAudio ? 'resampled (pitch shifts with tempo)' : 'none' } }));
     }, (reason) => ffJob(ctx, async (job) => {
-      const cont = CONTAINERS[format], vc = cont.v[0], out = job.tmp(`out.${format}`);
+      const cont = CONTAINERS[format], vc = ffVideoCodec(null, cont), out = job.tmp(`out.${format}`);
       const tempo = []; let f = a.factor; while (f > 2) { tempo.push('atempo=2.0'); f /= 2; } while (f < 0.5) { tempo.push('atempo=0.5'); f /= 0.5; } tempo.push(`atempo=${f}`);
       const args = ['-i', job.input(a.input), '-sn', '-dn', '-vf', `setpts=PTS/${a.factor},fps=${r3(a.factor > 1 ? Math.max(fps, 24) : fps)},scale=trunc(iw/2)*2:trunc(ih/2)*2`, '-c:v', ...FF_V[vc]];
-      if (FF_CRF[vc]) { args.push('-crf', String(FF_CRF[vc][QUALITIES.indexOf(a.quality)])); if (vc === 'vp9') args.push('-b:v', '0'); if (vc === 'vp8') args.push('-b:v', '4M'); }
+      if (FF_CRF[vc]) { args.push('-crf', String(FF_CRF[vc][QUALITIES.indexOf(a.quality)])); if (vc === 'vp8') args.push('-b:v', '4M'); }
       if (keepAudio) args.push('-af', tempo.join(','), '-c:a', ...FF_A[cont.a[0]], '-strict', '-2'); else args.push('-an');
       args.push('-f', cont.ff, ...(format === 'mp4' || format === 'mov' ? ['-movflags', '+faststart'] : []), out);
       await job.exec(args, { duration: src.duration });
@@ -1186,14 +1197,13 @@ register({
       } catch (e) { await output.cancel().catch(() => {}); throw oom(e); }
       return { bytes: new Uint8Array(output.target.buffer), info: { backend: 'webcodecs', hardwareAccelerated: hwVerdict(mode, hwEnc), videoCodec: uname(vcodec) } };
     }, (reason) => ffJob(ctx, async (job) => {
-      const cont = CONTAINERS[format], vc = vcodecU || cont.v[0];
-      if (!FF_V[vc] || vc === 'av1') throw new Error(`ffmpeg cannot encode ${vc}`);
+      const cont = CONTAINERS[format], vc = ffVideoCodec(vcodecU, cont);
       let list = '', lastName = '';
       for (let i = 0; i < n; i++) { await paint(i); const name = job.tmp(`i${String(i).padStart(5, '0')}.png`); await job.write(name, (await canvasBytes(c, 'png')).bytes); list += `file '${name}'\nduration ${counts[i] / a.fps}\n`; lastName = name; ctx.progress(0.3 * (i + 1) / n, 'images'); }
       list += `file '${lastName}'\n`;
       const lf = job.tmp('list.txt'), out = job.tmp(`out.${format}`); await job.write(lf, list);
       const args = ['-f', 'concat', '-safe', '0', '-i', lf, '-vf', `fps=${a.fps},format=yuv420p`, '-c:v', ...FF_V[vc]];
-      if (FF_CRF[vc]) { args.push('-crf', String(FF_CRF[vc][QUALITIES.indexOf(a.quality)])); if (vc === 'vp9') args.push('-b:v', '0'); if (vc === 'vp8') args.push('-b:v', '4M'); }
+      if (FF_CRF[vc]) { args.push('-crf', String(FF_CRF[vc][QUALITIES.indexOf(a.quality)])); if (vc === 'vp8') args.push('-b:v', '4M'); }
       args.push('-t', String(totalFrames / a.fps), '-f', cont.ff, ...(format === 'mp4' || format === 'mov' ? ['-movflags', '+faststart'] : []), out);
       await job.exec(args, { duration: totalFrames / a.fps, span: [0.3, 1] });
       return { bytes: await job.read(out), info: { backend: 'ffmpeg', hardwareAccelerated: false, videoCodec: vc, ...(reason ? { fallbackReason: reason } : {}) } };
@@ -1262,7 +1272,7 @@ register({
       const out = job.tmp(`out.${format}`);
       const copyV = cont.v.includes(vs.video.codec) && FF2U[vs.video.codec], copyA = MUX_COPY[format].includes(as.audio.codec);
       const args = ['-i', job.input(a.video), '-i', job.input(a.audio), '-map', '0:v:0', '-map', '1:a:0', '-sn', '-dn'];
-      args.push('-c:v', ...(copyV ? ['copy'] : FF_V[cont.v[0]]), '-c:a', ...(copyA ? ['copy'] : FF_A[cont.a[0]]), '-strict', '-2');
+      args.push('-c:v', ...(copyV ? ['copy'] : FF_V[ffVideoCodec(null, cont)]), '-c:a', ...(copyA ? ['copy'] : FF_A[cont.a[0]]), '-strict', '-2');
       if (end) args.push('-t', String(end));
       args.push('-f', cont.ff, ...(format === 'mp4' || format === 'mov' ? ['-movflags', '+faststart'] : []), out);
       await job.exec(args, { duration: end || Math.max(vs.duration, as.duration) });
@@ -1385,7 +1395,7 @@ register({
 // ───────────────────────────────────────────────────── raw ffmpeg ──
 register({
   name: 'video.ffmpeg',
-  description: `Escape hatch: run an arbitrary ffmpeg command line in ffmpeg.wasm (FFmpeg 5.1, CPU, single thread; libx264, libx265, libvpx, libmp3lame, libopus, libvorbis, libtheora, libwebp, libass, zimg; no AV1, no network, no hardware). Write args exactly as on a shell, without the leading "ffmpeg", using VFS paths: every path listed in inputs is mounted read-only and every name listed in outputs is copied back into the VFS afterwards. Use the dedicated video.* tools when they fit — this one is for filters and formats they do not cover. Returns {outputs, exitCode, log (last lines), backend:'ffmpeg'}. Inputs up to ${FF_MAX_INPUT / 1048576} MB in total.`,
+  description: `Escape hatch: run an arbitrary ffmpeg command line in ffmpeg.wasm (FFmpeg 5.1, CPU, single thread; libx264, libvpx (VP8), libmp3lame, libopus, libvorbis, libtheora, libwebp, libass, zimg; no network, no hardware, no AV1; known broken in this build: libvpx-vp9 lossy encoding crashes, libx265 hangs, libopus needs -compression_level 0 or 1). A run that prints nothing for 150 s is stopped. Write args exactly as on a shell, without the leading "ffmpeg", using VFS paths: every path listed in inputs is mounted read-only and every name listed in outputs is copied back into the VFS afterwards. Use the dedicated video.* tools when they fit — this one is for filters and formats they do not cover. Returns {outputs, exitCode, log (last lines), backend:'ffmpeg'}. Inputs up to ${FF_MAX_INPUT / 1048576} MB in total.`,
   schema: {
     properties: {
       args: { type: 'array', items: { type: 'string' }, description: 'ffmpeg arguments, one per element, e.g. ["-i","in.mp4","-vf","hue=s=0","out.mp4"]' },

@@ -12926,6 +12926,44 @@
    "readOnly": false
   },
   {
+   "name": "sys.debug",
+   "room": "*",
+   "description": "Switch verbose diagnostics on or off: when on, every log entry (including progress ticks) is mirrored to the browser console with millisecond timestamps, and the setting is remembered for this browser. Also available as ?debug in the URL.",
+   "inputSchema": {
+    "properties": {
+     "on": {
+      "type": "boolean",
+      "default": true,
+      "description": "true = verbose, false = quiet"
+     }
+    },
+    "type": "object"
+   },
+   "gpu": false,
+   "readOnly": false
+  },
+  {
+   "name": "sys.diag",
+   "room": "*",
+   "description": "Compatibility report for THIS browser: which browser/engine/OS it is, every capability the site uses (WebGPU adapter and limits, WASM SIMD/threads, WebCodecs codecs, canvas, storage quota, workers, WebMCP…) with a reason when one is missing, and a verdict per room — ok, degraded (works but slower, says why) or blocked (says what is missing). Call this first when something fails or is slow, or before choosing a backend.",
+   "inputSchema": {
+    "properties": {
+     "room": {
+      "type": "string",
+      "description": "Only this room's verdict (default: all rooms)"
+     },
+     "refresh": {
+      "type": "boolean",
+      "default": false,
+      "description": "Re-run the capability probes instead of using the cached result"
+     }
+    },
+    "type": "object"
+   },
+   "gpu": false,
+   "readOnly": true
+  },
+  {
    "name": "sys.env",
    "room": "*",
    "description": "Capabilities of this browser: WebGPU adapter and accelerated kernels, WebAssembly features, WebCodecs, threads, memory. Check this to know whether work runs on GPU or CPU.",
@@ -12950,6 +12988,45 @@
     "required": [
      "tool"
     ],
+    "type": "object"
+   },
+   "gpu": false,
+   "readOnly": true
+  },
+  {
+   "name": "sys.log",
+   "room": "*",
+   "description": "Read the page's diagnostic log: every tool call with its duration and backend, tool log lines (downloads, backend choices, fallbacks), warnings, failed calls, uncaught page errors and failed resource loads. Use it to see why a call failed or where the time went. Newest last.",
+   "inputSchema": {
+    "properties": {
+     "level": {
+      "type": "string",
+      "enum": [
+       "debug",
+       "info",
+       "warn",
+       "error"
+      ],
+      "default": "info",
+      "description": "Minimum level (debug includes every call start/end)"
+     },
+     "tool": {
+      "type": "string",
+      "description": "Only entries from this tool or subsystem (prefix match, e.g. \"video\" or \"pdf.render\")"
+     },
+     "last": {
+      "type": "integer",
+      "default": 50,
+      "minimum": 1,
+      "maximum": 400,
+      "description": "How many entries to return"
+     },
+     "since": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Only entries with n greater than this (pass the previous result's lastN to poll)"
+     }
+    },
     "type": "object"
    },
    "gpu": false,
@@ -13934,7 +14011,7 @@
        "prores"
       ],
       "default": "auto",
-      "description": "auto = keep the source codec when it fits the container and nothing forces a re-encode, else the container default (mp4/mov/mkv: h264, webm: vp9). av1 needs WebCodecs; mpeg4, theora, prores need ffmpeg"
+      "description": "auto = keep the source codec when it fits the container and nothing forces a re-encode, else the container default (mp4/mov/mkv: h264, webm: vp9). av1, hevc and vp9 are encoded by WebCodecs only (the ffmpeg build cannot); mpeg4, theora, prores by ffmpeg only"
      },
      "audioCodec": {
       "type": "string",
@@ -14170,7 +14247,7 @@
   {
    "name": "video.ffmpeg",
    "room": "video",
-   "description": "Escape hatch: run an arbitrary ffmpeg command line in ffmpeg.wasm (FFmpeg 5.1, CPU, single thread; libx264, libx265, libvpx, libmp3lame, libopus, libvorbis, libtheora, libwebp, libass, zimg; no AV1, no network, no hardware). Write args exactly as on a shell, without the leading \"ffmpeg\", using VFS paths: every path listed in inputs is mounted read-only and every name listed in outputs is copied back into the VFS afterwards. Use the dedicated video.* tools when they fit — this one is for filters and formats they do not cover. Returns {outputs, exitCode, log (last lines), backend:'ffmpeg'}. Inputs up to 1024 MB in total.",
+   "description": "Escape hatch: run an arbitrary ffmpeg command line in ffmpeg.wasm (FFmpeg 5.1, CPU, single thread; libx264, libvpx (VP8), libmp3lame, libopus, libvorbis, libtheora, libwebp, libass, zimg; no network, no hardware, no AV1; known broken in this build: libvpx-vp9 lossy encoding crashes, libx265 hangs, libopus needs -compression_level 0 or 1). A run that prints nothing for 150 s is stopped. Write args exactly as on a shell, without the leading \"ffmpeg\", using VFS paths: every path listed in inputs is mounted read-only and every name listed in outputs is copied back into the VFS afterwards. Use the dedicated video.* tools when they fit — this one is for filters and formats they do not cover. Returns {outputs, exitCode, log (last lines), backend:'ffmpeg'}. Inputs up to 1024 MB in total.",
    "inputSchema": {
     "properties": {
      "args": {

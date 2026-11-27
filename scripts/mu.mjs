@@ -5,7 +5,7 @@
 //   node scripts/mu.mjs script <file.js> [--put ...] [--get ...]     file body runs in the page as: async (M) => { <body> }
 //   node scripts/mu.mjs manifest                                     writes web/tools.json
 //   node scripts/mu.mjs serve [--port 8787]                          just the static server
-// Flags: --room <id> (open that room's page instead of loading every family)  --port N (default: random free port)  --cpu (disable WebGPU)  --timeout ms (default 180000)  --quiet
+// Flags: --browser chrome|edge|firefox  --room <id> (open that room's page instead of loading every family)  --port N (default: random free port)  --cpu (disable WebGPU)  --timeout ms (default 180000)  --quiet
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -55,16 +55,18 @@ async function main() {
   if (!['call', 'script', 'manifest'].includes(cmd)) { console.error(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 9).join('\n')); process.exit(2); }
 
   const room = flag('room');
+  const which = flag('browser') || 'chrome';
   const cpu = bool('cpu'); const quiet = bool('quiet'); const timeout = Number(flag('timeout') || 180000);
   const puts = multi('put'); const gets = multi('get');
   const argsInline = flag('args'); const argsFile = flag('args-file');
   const { default: puppeteer } = await import('puppeteer-core');
   const server = await serve(port);
   const base = `http://127.0.0.1:${server.address().port}/`;
-  const browser = await puppeteer.launch({
-    executablePath: findBrowser(), headless: true, protocolTimeout: timeout + 30000,
-    args: ['--no-first-run', '--autoplay-policy=no-user-gesture-required', ...(cpu ? ['--disable-gpu'] : ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist', '--use-angle=d3d11'])],
-  });
+  const EXE = { chrome: findBrowser(), edge: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', firefox: process.env.FIREFOX_PATH || 'C:/Program Files/Mozilla Firefox/firefox.exe' };
+  const browser = await puppeteer.launch(which === 'firefox'
+    ? { browser: 'firefox', executablePath: EXE.firefox, headless: true, protocolTimeout: timeout + 30000, extraPrefsFirefox: cpu ? { 'dom.webgpu.enabled': false } : {} }
+    : { executablePath: EXE[which] || EXE.chrome, headless: true, protocolTimeout: timeout + 30000,
+      args: ['--no-first-run', '--autoplay-policy=no-user-gesture-required', ...(cpu ? ['--disable-gpu'] : ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist', '--use-angle=d3d11'])] });
   let code = 0;
   try {
     const page = await browser.newPage();

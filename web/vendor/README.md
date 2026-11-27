@@ -10,7 +10,7 @@ Everything the page needs at runtime lives here; nothing is fetched from a CDN.
 | smol-toml | 1.9.1 | BSD-3-Clause | smol-toml/*.js (ESM dist) | tools/data.js (TOML read/write) |
 | mammoth | 1.13.0 | BSD-2-Clause (bundles jszip MIT, bluebird MIT, underscore MIT, xmlbuilder MIT and others) | mammoth/mammoth.browser.min.js (UMD → window.mammoth, 405 KB) | tools/doc.js (docx → HTML → Markdown) |
 | turndown | 7.2.5 | MIT | turndown/turndown.js (browser ESM build) | tools/doc.js (HTML → Markdown) |
-| turndown-plugin-gfm | 1.0.2 | MIT | turndown/turndown-plugin-gfm.js (browser ESM build) | tools/doc.js (strikethrough, task lists) |
+| turndown-plugin-gfm | 1.0.2 | MIT | turndown/turndown-plugin-gfm.js (browser ESM build) | tools/doc.js (task-list items; tables and strikethrough are handled by our own rules) |
 | marked | 18.3.0 | MIT | marked/marked.js (ESM build, sourcemap comment removed) | tools/doc.js (Markdown → HTML / tokens for docx) |
 | tesseract.js | 7.0.0 | Apache-2.0 | tesseract/tesseract.esm.min.js, tesseract/worker.min.js (sourceMappingURL comment stripped) | tools/vision.js (vision.ocr, vision.ocrOverlay) |
 | tesseract.js-core (Tesseract 5 LSTM, WASM) | 7.0.0 | Apache-2.0 | tesseract/tesseract-core-simd-lstm.{js,wasm} (2.9 MB), tesseract/tesseract-core-lstm.{js,wasm} (non-SIMD fallback, 2.9 MB) | tools/vision.js (OCR engine, runs in a worker) |

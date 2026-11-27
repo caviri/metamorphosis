@@ -7,7 +7,7 @@ const ac = new AbortController();
 const mcpName = (n) => n.replace(/\./g, '_');
 
 async function execute(name, input) {
-  const env = await M.call(name, input || {});
+  const env = await M.call(name, input || {}, { via: 'webmcp' });
   // WebMCP hands the caller a JSON string of whatever we return; keep failures explicit and in-band.
   return env.ok ? env.result : { error: env.error, tool: name, hint: `call sys_help {"tool":"${name}"} for the schema` };
 }

@@ -224,7 +224,7 @@ const DOCX_STYLE_MAP = [
   ...['Source Code', 'Code', 'Code Block', 'HTML Preformatted', 'Preformatted Text', 'macro'].map((s) => `p[style-name='${s}'] => pre:separator('\\n')`),
   ...['Verbatim Char', 'Source Text', 'Code Char', 'HTML Code', 'Inline Code', 'Source Code Char'].map((s) => `r[style-name='${s}'] => code`),
   ...['Quote', 'Intense Quote', 'Block Text', 'Block Quote', 'Quotations'].map((s) => `p[style-name='${s}'] => blockquote > p:fresh`),
-  "p[style-name='Horizontal Line'] => hr", "p[style-name='List Paragraph'] => p:fresh", 'strike => del',
+  "p[style-name='Horizontal Line'] => hr", 'strike => del',
 ];
 export async function docxToHtml(bytes, { images = true } = {}) {
   const mammoth = await mammothLib();
@@ -241,7 +241,8 @@ export async function docxToHtml(bytes, { images = true } = {}) {
   const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   let res;
   try { res = await mammoth.convertToHtml({ arrayBuffer: ab }, options); } catch (e) { throw new Error(`docx could not be read (${e.message || e}) \u2014 is the file a valid, unencrypted .docx?`); }
-  const warnings = [...new Set(res.messages.map((m) => m.message))].slice(0, 20);
+  // "List Paragraph" is Word's stock list style; mammoth maps such paragraphs through their numbering, so the notice is noise
+  const warnings = [...new Set(res.messages.map((m) => m.message))].filter((m) => !/Unrecognised paragraph style: 'List Paragraph'/.test(m)).slice(0, 20);
   return { html: res.value, store, warnings };
 }
 async function docxToMd(s, c) {
@@ -575,7 +576,7 @@ async function ipynbToMd(s, c) {
         if (imgMime) { const mime = imgMime.includes('/') ? imgMime : `image/${imgMime}`; const md = await image(data[imgMime], mime, `cell${i + 1}-output${k}.${extFor(mime)}`); if (md) parts.push(md); if (!data['text/markdown'] && !data['text/latex']) continue; }
         if (data['text/markdown']) parts.push(joinSrc(data['text/markdown']).trim());
         else if (data['text/latex']) parts.push(joinSrc(data['text/latex']).trim());
-        else if (data['text/html'] && /<table/i.test(joinSrc(data['text/html'])) && c.tables !== 'drop') { const d = H.parseHtml(joinSrc(data['text/html'])); H.cleanDom(d.body); const md = (await H.domToMarkdown(d.body, { ...c, images: 'drop' })).trim(); if (md) parts.push(cap && md.length > cap * 2 ? fence(clip(joinSrc(data['text/plain'] || md)), 'text') : md); } else if (data['text/plain'] || data.text) parts.push(fence(clip(joinSrc(data['text/plain'] || data.text)), 'text'));
+        else if (data['text/html'] && ((/<table/i.test(joinSrc(data['text/html'])) && c.tables !== 'drop') || !(data['text/plain'] || data.text))) { const d = H.parseHtml(joinSrc(data['text/html'])); H.cleanDom(d.body); const md = (await H.domToMarkdown(d.body, { ...c, images: 'drop' })).trim(); if (md) parts.push(cap && md.length > cap * 2 ? fence(clip(joinSrc(data['text/plain'] || md)), 'text') : md); } else if (data['text/plain'] || data.text) parts.push(fence(clip(joinSrc(data['text/plain'] || data.text)), 'text'));
         else if (data['application/json']) parts.push(fence(clip(JSON.stringify(data['application/json'], null, 1)), 'json'));
       }
       flush();
@@ -602,6 +603,7 @@ export function rtfToMd(bytes, c = {}) {
     if (st.dest === 'info') return;
     if (st.dest === 'stylesheet') { styleName += t; return; }
     if (st.dest === 'fldinst') { st.inst.text += t; return; }
+    if (st.hidden) return;
     runs.push({ text: t, bold: st.bold, italic: st.italic, strike: st.strike, href: st.href || undefined });
   };
   const flushTable = () => { if (table.length) { const md = tableMd(table); if (md && c.tables !== 'drop') blocks.push(md); table = []; } };
@@ -659,10 +661,11 @@ export function rtfToMd(bytes, c = {}) {
           case 'par': case 'sect': case 'page': endPara(); break;
           case 'line': runs.push({ br: true }); break;
           case 'pard': para = { level: 0, intbl: false, list: para.list && !runs.length }; break;
-          case 'plain': st.bold = st.italic = st.strike = false; break;
+          case 'plain': st.bold = st.italic = st.strike = st.hidden = false; break;
           case 'b': st.bold = num !== 0; break;
           case 'i': st.italic = num !== 0; break;
           case 'strike': st.strike = num !== 0; break;
+          case 'v': st.hidden = num !== 0; break;
           case 'outlinelevel': if (num !== null && num >= 0 && num < 6) para.level = num + 1; break;
           case 's': { const nm = styles.get(num) || ''; const m = /^heading (\d)/i.exec(nm); if (m) para.level = +m[1]; else if (/^title$/i.test(nm)) para.level = 1; else if (/list (bullet|paragraph|number)/i.test(nm)) para.list = true; break; }
           case 'ls': case 'ilvl': if (word === 'ls' && num > 0) para.list = true; break;

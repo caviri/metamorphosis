@@ -36,7 +36,7 @@ function show(value) {
 }
 
 // ────────────────────────────────────────────────────────── parsing ──
-const ALIAS = { ls: 'fs.list', cat: 'fs.read', rm: 'fs.rm', mv: 'fs.mv', cp: 'fs.cp', view: 'fs.preview', get: 'fs.download', fetch: 'fs.fetch', env: 'sys.env', tools: 'sys.tools', rooms: 'sys.rooms', man: 'sys.help', help: 'sys.help' };
+const ALIAS = { diag: 'sys.diag', log: 'sys.log', debug: 'sys.debug', ls: 'fs.list', cat: 'fs.read', rm: 'fs.rm', mv: 'fs.mv', cp: 'fs.cp', view: 'fs.preview', get: 'fs.download', fetch: 'fs.fetch', env: 'sys.env', tools: 'sys.tools', rooms: 'sys.rooms', man: 'sys.help', help: 'sys.help' };
 
 function tokenize(s) {
   const out = []; let cur = '', q = null, depth = 0, had = false;
@@ -82,7 +82,7 @@ async function exec(text) {
   if (text === 'put') { $('file').click(); return null; }
   let piped, env = null;
   for (const stage of text.split(/\s\|\s/)) {
-    try { const { name, args } = await parse(stage, piped); env = await M.call(name, args); } catch (e) { env = { ok: false, error: e.message }; line('err', e.message); }
+    try { const { name, args } = await parse(stage, piped); env = await M.call(name, args, { via: 'terminal' }); } catch (e) { env = { ok: false, error: e.message }; line('err', e.message); }
     if (!env.ok) break;
     const outs = M.outputsOf(env.result).map((o) => o.path);
     piped = outs.length > 1 ? outs : outs[0];
@@ -92,15 +92,44 @@ async function exec(text) {
 M.exec = exec;
 
 // ─────────────────────────────────────────────────────────── events ──
-let running = 0;
+// Who is calling? 'terminal' is the prompt; 'webmcp' is an agent through document.modelContext; 'api' is a script
+// on the page calling M.call (an agent driving the page by JavaScript). The last two light the πράκτωρ chip, get
+// their own line in the log, and drive the progress strip under the nav.
+const active = new Map(); // id → {tool, via, t0, fraction, note}
+const agent = { calls: 0, last: 0, timer: null };
+const short = (args) => { try { const s = JSON.stringify(args); return s === '{}' ? '' : ' ' + (s.length > 160 ? s.slice(0, 157) + '…' : s); } catch { return ''; } };
+function work() {
+  const el = $('work'); if (!el) return;
+  const cur = [...active.values()].pop();
+  if (!cur) { el.hidden = true; el.classList.remove('spin', 'agent'); $('busy').hidden = true; return; }
+  el.hidden = false; $('busy').hidden = false; $('busy-what').textContent = cur.tool;
+  const isAgent = cur.via !== 'terminal'; el.classList.toggle('agent', isAgent);
+  const known = cur.fraction != null && cur.fraction >= 0; el.classList.toggle('spin', !known);
+  $('work-bar').style.width = known ? `${Math.round(Math.min(1, cur.fraction) * 100)}%` : '';
+  el.setAttribute('aria-valuenow', known ? Math.round(cur.fraction * 100) : 0);
+  const secs = ((performance.now() - cur.t0) / 1000).toFixed(1);
+  $('work-text').textContent = `${isAgent ? `⟐ ${cur.via} ` : ''}${cur.tool}${known ? ` ${Math.round(cur.fraction * 100)}%` : ''}${cur.note ? ` — ${cur.note}` : ''} · ${secs}s${active.size > 1 ? ` · +${active.size - 1} more` : ''}`;
+}
+setInterval(() => { if (active.size) work(); }, 250);
+function agentSeen(via) {
+  agent.calls++; agent.last = Date.now();
+  const chip = $('agent-chip'); if (!chip) return;
+  chip.classList.add('live'); $('chip-agent').textContent = `${via} ${agent.calls}`;
+  chip.title = `an agent is calling tools on this page — ${agent.calls} call${agent.calls > 1 ? 's' : ''} so far, last via ${via}`;
+  clearTimeout(agent.timer); agent.timer = setTimeout(() => { if (!active.size) chip.classList.remove('live'); }, 4000);
+}
 M.on('log', ({ level, tool, msg }) => line(level === 'warn' ? 'warn' : 'sys', `${tool ? `[${tool}] ` : ''}${msg}`));
-M.on('progress', ({ tool, fraction, note }) => { $('busy-what').textContent = `${tool} ${fraction != null ? Math.round(fraction * 100) + '%' : ''} ${note || ''}`; });
-M.on('call:start', ({ tool }) => { running++; $('busy').hidden = false; $('busy-what').textContent = tool; });
+M.on('progress', ({ tool, fraction, note }) => { for (const a of active.values()) if (a.tool === tool) { a.fraction = fraction; a.note = note; } work(); });
+M.on('call:start', ({ id, tool, args, via }) => {
+  active.set(id, { tool, via, t0: performance.now() });
+  if (via !== 'terminal') { agentSeen(via); line('agent', `${via} → ${tool}${short(args)}`); }
+  work();
+});
 M.on('call:end', (env) => {
-  if (--running <= 0) { running = 0; $('busy').hidden = true; }
-  const { id, ...rest } = env;
+  active.delete(env.id); work();
+  const { id, via, ...rest } = env;
   try { const s = JSON.stringify(rest); $('last-result').textContent = s.length > 200000 ? JSON.stringify({ ok: rest.ok, tool: rest.tool, ms: rest.ms, note: 'result too large for the DOM mirror; read M.last' }) : s.replace(/</g, '\\u003c'); } catch { /* unserialisable */ }
-  if (env.ok) { show(env.result); line('ok', `✓ ${env.tool} · ${env.ms} ms${env.result?.backend ? ` · ${env.result.backend}` : ''}`); } else line('err', env.error);
+  if (env.ok) { show(env.result); line('ok', `✓ ${env.tool} · ${env.ms} ms${env.result?.backend ? ` · ${env.result.backend}` : ''}${via !== 'terminal' ? ` · ${via}` : ''}`); } else line('err', env.error);
   const outs = M.outputsOf(env.result);
   if (outs.length && env.tool !== 'fs.preview') render(outs[outs.length - 1].path);
 });
@@ -252,14 +281,35 @@ async function marquee() {
   track.style.setProperty('--drift', `${Math.max(30, names.length * 2.2)}s`);
 }
 
+// chips and per-room verdicts: filled in after the banner, never blocking it (capability probes can take a moment)
+async function indicators() {
+  const env = await M.run('sys.env');
+  const chip = (id, text, cls, tip) => { const e = $(id); if (!e) return; e.textContent = text; e.className = cls || ''; if (tip) e.parentElement.title = tip; };
+  const d = M.diag; const f = d ? await d.probe() : {}; const b = d?.browser() || {};
+  chip('chip-browser', `${(b.name || '?').toLowerCase()} ${b.major ?? ''}`.trim(), '', `${b.name} ${b.version || ''} · ${b.engine} · ${b.os}${b.mobile ? ' · mobile' : ''}`);
+  chip('chip-gpu', env.gpu.available ? (env.gpu.fallback ? 'software' : env.gpu.vendor || 'webgpu') : 'cpu', env.gpu.available && !env.gpu.fallback ? '' : 'off', f.webgpu?.detail || '');
+  chip('chip-wasm', env.wasm.simd ? 'simd' : env.wasm.supported ? 'no simd' : 'none', env.wasm.simd ? '' : 'bad', `simd ${env.wasm.simd ? 'yes' : 'NO'} · threads ${env.wasm.threads ? 'yes' : 'no (static host)'}`);
+  chip('chip-mcp', env.webmcp.registered ? `${env.webmcp.native ? 'native' : 'polyfill'} ${env.webmcp.registered}` : 'off', env.webmcp.registered ? '' : 'off', f.webmcpNative?.detail || '');
+  chip('chip-tools', String(env.tools));
+  // per-room verdict for this browser: a mark on the nav, and a plain explanation if the room you are in is affected
+  if (d) {
+    const verdicts = await d.rooms();
+    for (const v of verdicts) {
+      if (v.status === 'ok') continue;
+      const a = document.querySelector(`#rooms a[title="${v.id}"]`);
+      if (a) { a.insertAdjacentHTML('beforeend', `<i class="${v.status}">${v.status === 'blocked' ? '✗' : '◐'}</i>`); a.title = `${v.id} — ${v.status}: ${v.issues.map((x) => `${x.feature} (${x.effect})`).join('; ')}`; }
+      if (M.room.ids.includes(v.id)) for (const x of v.issues) if (x.need !== 'optional') line(x.need === 'required' ? 'err' : 'warn', `${b.name}: ${x.feature} is missing — ${x.effect}`);
+    }
+    const flag = $('diag-flag');
+    const paint = ({ counts }) => { if (!flag) return; flag.hidden = !(counts.error + counts.warn); flag.textContent = `${counts.error ? `✗ ${counts.error}` : ''}${counts.error && counts.warn ? ' ' : ''}${counts.warn ? `△ ${counts.warn}` : ''}`; flag.classList.toggle('bad', counts.error > 0); };
+    paint({ counts: d.counts }); M.on('diag', paint);
+    if (flag) flag.onclick = () => exec('sys.log level=warn');
+  }
+}
+
 export async function afterBoot() {
   nav(); listFiles(); marquee();
-  const env = await M.run('sys.env');
-  const chip = (id, text, off) => { const e = $(id); e.textContent = text; e.classList.toggle('off', !!off); };
-  chip('chip-gpu', env.gpu.available ? (env.gpu.vendor || 'webgpu') : 'cpu', !env.gpu.available);
-  chip('chip-wasm', env.wasm.simd ? 'simd' : env.wasm.supported ? 'ok' : 'none', !env.wasm.supported);
-  chip('chip-mcp', env.webmcp.registered ? `${env.webmcp.native ? 'native' : 'polyfill'} ${env.webmcp.registered}` : 'off', !env.webmcp.registered);
-  chip('chip-tools', String(env.tools));
+  indicators().catch((e) => M.diag?.log('error', 'ui', `indicators failed: ${e.message}`));
   const here = M.rooms.filter((r) => M.room.ids.includes(r.id));
   line('banner', `μεταμόρφωσις ${M.version} · ${M.room.id === 'hub' ? 'ἀρχή — the hub' : here.map((r) => `${r.gr} — ${r.id}`).join(' · ')}`);
   if (M.room.id === 'hub') {
@@ -270,7 +320,7 @@ export async function afterBoot() {
     const names = [...M.tools.values()].filter((t) => M.exposed(t) && !['fs', 'sys'].includes(t.domain)).map((t) => t.name).sort();
     line('out', names.join('  ') || '(no tools loaded for this room)');
   }
-  line('note', 'type a tool name · tab completes · `man <tool>` for its schema · `a | b` pipes outputs · `rooms` lists the other rooms');
+  line('note', 'type a tool name · tab completes · `man <tool>` for its schema · `a | b` pipes outputs · `rooms` lists the other rooms · `diag` checks this browser');
   const x = new URLSearchParams(location.search).get('x');
   if (x) for (const cmd of x.split(';')) await exec(cmd);
   if (matchMedia('(pointer: fine)').matches) prompt.focus();

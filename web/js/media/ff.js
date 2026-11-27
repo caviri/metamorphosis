@@ -63,7 +63,8 @@ async function runJob(ctx, fn) {
     const m = msgOf(e);
     if (FATAL.test(m) || /terminated/i.test(m)) {
       dead = true;
-      return new Error(`ffmpeg ${what} crashed (${m.slice(0, 160)}) — most likely the file needs more memory than the single-thread WebAssembly heap allows (2 GB hard limit, in practice inputs up to a few hundred MB). Trim or downscale first, or use backend=webcodecs.`);
+      if (/Cannot enlarge memory|out of memory|OOM|allocation/i.test(m)) return new Error(`ffmpeg ${what} ran out of memory (${m.slice(0, 120)}): the job needs more than the single-thread WebAssembly heap allows (2 GB hard limit; in practice inputs up to a few hundred MB). Trim or downscale first, or use backend=webcodecs.`);
+      return new Error(`ffmpeg ${what} crashed inside WebAssembly (${m.slice(0, 120)}). Either this encoder/filter is broken in the ffmpeg.wasm build (known: libvpx-vp9 and libx265 encoding, libopus above -compression_level 1) or the job ran out of memory. Try another codec, a smaller job, or backend=webcodecs.`);
     }
     return new Error(`ffmpeg ${what} failed: ${m}`);
   };

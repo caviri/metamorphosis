@@ -23,7 +23,7 @@ const MIME = {
   zip: 'application/zip', gz: 'application/gzip', tar: 'application/x-tar',
   kmz: 'application/vnd.google-earth.kmz', shp: 'application/x-shapefile', dbf: 'application/x-dbf', prj: 'text/plain', polyline: 'text/plain',
   tgz: 'application/gzip', '7z': 'application/x-7z-compressed', rar: 'application/vnd.rar', bz2: 'application/x-bzip2', xz: 'application/x-xz', sqlite: 'application/vnd.sqlite3',
-  xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12', ods: 'application/vnd.oasis.opendocument.spreadsheet', odt: 'application/vnd.oasis.opendocument.text', epub: 'application/epub+zip', ipynb: 'application/x-ipynb+json', eml: 'message/rfc822', rtf: 'application/rtf',
+  xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12', ods: 'application/vnd.oasis.opendocument.spreadsheet', odt: 'application/vnd.oasis.opendocument.text', epub: 'application/epub+zip', ipynb: 'application/x-ipynb+json', eml: 'message/rfc822', rtf: 'application/rtf', mbox: 'application/mbox', odp: 'application/vnd.oasis.opendocument.presentation', diff: 'text/x-diff', patch: 'text/x-diff',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -37,7 +37,7 @@ const extForMime = (mime) => {
   const base = (mime || '').split(';')[0].trim();
   return pref[base] || Object.keys(MIME).find((k) => MIME[k] === base) || 'bin';
 };
-const isTextMime = (m) => /^text\/|json|xml|yaml|toml|javascript|subrip|svg/.test(m || '');
+const isTextMime = (m) => /^text\/|json|xml|yaml|toml|javascript|subrip|svg|rfc822|rtf|mbox/.test(m || '');
 
 // ────────────────────────────────────────────────────────────── vfs ──
 // Flat in-memory file system. Paths are plain names ("cat.png", "out/page-1.png"). No leading slash needed.
@@ -224,10 +224,14 @@ async function run(name, args = {}, parent) {
 }
 
 let seq = 0;
-/** call(name, args) → envelope {ok, tool, ms, result} | {ok:false, tool, ms, error}. Never throws. This is the agent entry point. */
-async function call(name, args = {}) {
+/**
+ * call(name, args) → envelope {ok, tool, ms, result} | {ok:false, tool, ms, error}. Never throws. This is the agent entry point.
+ * opts.via says who is calling: 'webmcp' (an agent through document.modelContext), 'terminal' (the prompt), default 'api' (script on the page).
+ */
+async function call(name, args = {}, opts = {}) {
+  const via = opts.via || 'api';
   const id = ++seq; const t0 = performance.now();
-  emit('call:start', { id, tool: name, args });
+  emit('call:start', { id, tool: name, args, via });
   let env;
   try {
     const result = await run(name, args);
@@ -237,7 +241,7 @@ async function call(name, args = {}) {
     env = { ok: false, tool: name, ms: Math.round(performance.now() - t0), error: e?.message || String(e) };
   }
   M.last = env;
-  emit('call:end', { id, ...env });
+  emit('call:end', { id, via, ...env });
   return env;
 }
 
@@ -283,7 +287,7 @@ const gpu = {
           const device = await adapter.requestDevice({ requiredLimits: want }).catch(() => adapter.requestDevice());
           device.lost.then(() => { gpuState = undefined; });
           const i = adapter.info || {};
-          st = { adapter, device, info: { vendor: i.vendor || '', architecture: i.architecture || '', device: i.device || '', description: i.description || '', fallback: !!(i.isFallbackAdapter ?? adapter.isFallbackAdapter) } };
+          st = { adapter, device, info: { vendor: i.vendor || '', architecture: i.architecture || '', device: i.device || '', description: i.description || '', fallback: !!(i.isFallbackAdapter ?? adapter.isFallbackAdapter), f16: adapter.features.has('shader-f16'), features: [...adapter.features].sort() } };
         }
       } catch (e) { console.warn('[μ] webgpu unavailable:', e); }
       gpuState = st; gpuProbe = null;
