@@ -13173,7 +13173,7 @@
     "type": "object"
    },
    "gpu": false,
-   "readOnly": true
+   "readOnly": false
   },
   {
    "name": "text.grep",

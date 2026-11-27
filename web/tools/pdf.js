@@ -278,6 +278,7 @@ async function pageLines(pdfjs, page, { order = 'stream', fonts = false } = {}) 
   const flush = () => {
     if (!cur) return;
     const segs = cur.segs.map((s) => ({ x: s.x, text: s.text.replace(/\s+/g, ' ').trim() })).filter((s) => s.text);
+    if (segs.length > 1 && MARKER.test(segs[0].text)) { segs[1] = { x: segs[0].x, text: `${segs[0].text} ${segs[1].text}` }; segs.shift(); } // a list marker is not a table cell
     if (segs.length) {
       let size = cur.size, best = 0; for (const [k, v] of cur.sizes) if (v > best) { best = v; size = k; }
       let font = null; best = 0; for (const [k, v] of cur.fonts) if (v > best) { best = v; font = k; }
@@ -346,6 +347,7 @@ function stripRepeated(pages) {
   return removed;
 }
 
+const MARKER = /^([•◦▪■●○‣·∙*\-–—]|\(?\d{1,3}[.)])$/;
 const BULLET = /^([•◦▪■●○‣·∙*\-–—])\s+(.*)$/;
 const NUMBERED = /^(\(?\d{1,3}[.)])\s+(.*)$/;
 
@@ -392,9 +394,9 @@ function pagesToMarkdown(pages, { pageMarkers = false, tables = true } = {}) {
         while (j < L.length && levelOf(L[j]) === lv && levelOf(l) === lv && gapOk(L[j - 1], L[j], 1.5) && !isList(L[j])) text += ' ' + L[j++].text;
         out.push(`${'#'.repeat(lv)} ${text.replace(/\s{2,}/g, ' ')}`); stats.headings++; i = j; continue;
       }
-      if (tables && l.segs.length >= 2) {
+      if (tables && l.segs.length >= 2 && !isList(l)) {
         const rows = [l]; let j = i + 1;
-        while (j < L.length && L[j].segs.length >= 2 && !L[j].mono && gapOk(L[j - 1], L[j], 3)) rows.push(L[j++]);
+        while (j < L.length && L[j].segs.length >= 2 && !L[j].mono && !isList(L[j]) && gapOk(L[j - 1], L[j], 3)) rows.push(L[j++]);
         if (rows.length >= 2) {
           const xs = rows.flatMap((r) => r.segs.map((s) => s.x)).sort((a, b) => a - b); const tol = Math.max(6, l.size * 1.2);
           const cols = []; for (const x of xs) { if (!cols.length || x - cols[cols.length - 1] > tol) cols.push(x); }

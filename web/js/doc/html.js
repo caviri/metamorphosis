@@ -182,6 +182,7 @@ export async function domToMarkdown(root, opts = {}) {
     filter: 'li',
     replacement: (content, node, options) => {
       content = content.replace(/^\n+/, '').replace(/\n+$/, '\n').replace(/^(\u2611|\u2612|\u2610)\s+/, (m, b) => (b === '\u2610' ? '[ ] ' : '[x] '));
+      content = content.replace(/^(\[[ x]\]) {2,}/, '$1 ');
       const parent = node.parentNode; let prefix = `${options.bulletListMarker} `;
       if (parent && parent.nodeName === 'OL') { const start = parseInt(parent.getAttribute('start') || '1', 10) || 1; prefix = `${start + Array.prototype.indexOf.call(parent.children, node)}. `; }
       content = content.replace(/\n/gm, `\n${' '.repeat(prefix.length)}`).replace(/\n +$/, '\n').replace(/\n +\n/g, '\n\n');

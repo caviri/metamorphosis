@@ -619,7 +619,7 @@ register({
 
 const KINDS = ['emails', 'urls', 'dates', 'numbers', 'hashes', 'ips', 'uuids', 'phones'];
 register({
-  name: 'text.extract', readOnly: true,
+  name: 'text.extract',
   description: 'Find entities in a text file by pattern: emails, urls (http/https/ftp), dates (ISO 8601, 31/12/2024-style, English month names), numbers (with thousands separators, decimals, exponents, %), hashes (hex strings of MD5/SHA-1/SHA-256/SHA-512 length), ips (IPv4 and IPv6, validated), uuids, phones (7\u201315 digits with common separators). Returns, per kind, the total and unique counts and the values with their frequencies, most frequent first, capped at limit. Pattern-based: expect some false positives (e.g. version numbers among numbers, order numbers among phones) and no understanding of context.',
   schema: {
     properties: {

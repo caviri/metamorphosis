@@ -21,6 +21,7 @@ const MIME = {
   js: 'text/javascript', mjs: 'text/javascript', wasm: 'application/wasm',
   geojson: 'application/geo+json', topojson: 'application/json', kml: 'application/vnd.google-earth.kml+xml', gpx: 'application/gpx+xml', wkt: 'text/plain',
   zip: 'application/zip', gz: 'application/gzip', tar: 'application/x-tar',
+  kmz: 'application/vnd.google-earth.kmz', shp: 'application/x-shapefile', dbf: 'application/x-dbf', prj: 'text/plain', polyline: 'text/plain',
   tgz: 'application/gzip', '7z': 'application/x-7z-compressed', rar: 'application/vnd.rar', bz2: 'application/x-bzip2', xz: 'application/x-xz', sqlite: 'application/vnd.sqlite3',
   xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12', ods: 'application/vnd.oasis.opendocument.spreadsheet', odt: 'application/vnd.oasis.opendocument.text', epub: 'application/epub+zip', ipynb: 'application/x-ipynb+json', eml: 'message/rfc822', rtf: 'application/rtf',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -149,6 +150,18 @@ function register(def) {
 }
 
 // Minimal JSON-schema-ish normaliser: defaults, required, type coercion (terminal args arrive as strings), enum.
+// "a, f(x, 1) as y, c" → ['a', 'f(x, 1) as y', 'c'] : commas inside brackets or quotes do not split
+function splitTop(str) {
+  const out = []; let cur = '', depth = 0, q = null;
+  for (const c of str) {
+    if (q) { cur += c; if (c === q) q = null; continue; }
+    if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    if ('([{'.includes(c)) depth++; else if (')]}'.includes(c)) depth--;
+    if (c === ',' && depth <= 0) { out.push(cur); cur = ''; } else cur += c;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
 function coerce(v, s, key) {
   if (v === undefined || v === null || !s) return v;
   const t = Array.isArray(s.type) ? s.type[0] : s.type;
@@ -156,7 +169,7 @@ function coerce(v, s, key) {
   if (t === 'boolean' && typeof v === 'string') v = v === 'true' || v === '1' || v === 'yes';
   if (t === 'string' && typeof v !== 'string' && typeof v !== 'object') v = String(v);
   if ((t === 'object' || t === 'array') && typeof v === 'string' && /^\s*[[{]/.test(v)) { try { v = JSON.parse(v); } catch { throw new Error(`arg "${key}" is not valid JSON`); } }
-  if (t === 'array' && !Array.isArray(v)) v = typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : [v];
+  if (t === 'array' && !Array.isArray(v)) v = typeof v === 'string' ? splitTop(v) : [v];
   if (t === 'array' && s.items) v = v.map((x) => coerce(x, s.items, key));
   if (t === 'integer' && typeof v === 'number') v = Math.round(v);
   if ((t === 'number' || t === 'integer')) {

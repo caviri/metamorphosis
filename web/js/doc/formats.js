@@ -224,7 +224,7 @@ const DOCX_STYLE_MAP = [
   ...['Source Code', 'Code', 'Code Block', 'HTML Preformatted', 'Preformatted Text', 'macro'].map((s) => `p[style-name='${s}'] => pre:separator('\\n')`),
   ...['Verbatim Char', 'Source Text', 'Code Char', 'HTML Code', 'Inline Code', 'Source Code Char'].map((s) => `r[style-name='${s}'] => code`),
   ...['Quote', 'Intense Quote', 'Block Text', 'Block Quote', 'Quotations'].map((s) => `p[style-name='${s}'] => blockquote > p:fresh`),
-  "p[style-name='Horizontal Line'] => hr", 'strike => del',
+  "p[style-name='Horizontal Line'] => hr", "p[style-name='List Paragraph'] => p:fresh", 'strike => del',
 ];
 export async function docxToHtml(bytes, { images = true } = {}) {
   const mammoth = await mammothLib();
