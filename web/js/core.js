@@ -132,6 +132,25 @@ const vfs = {
   },
   extOf, stemOf, mimeOf, extForMime, isTextMime,
   restore: () => persist.restore(),
+  /**
+   * Lineage. Every file a tool writes remembers `from` (the VFS files it was made from) and `by` (the tool).
+   * root(path) walks `from` back to the file the pipeline started with; files sharing a root are one pipeline.
+   */
+  root(path) {
+    path = norm(path); const seen = new Set();
+    while (!seen.has(path)) { seen.add(path); const p = files.get(path)?.meta?.from?.find((x) => files.has(x) && !seen.has(x)); if (!p) break; path = p; }
+    return path;
+  },
+  /** pipelines() → [{root, files:[{path, depth, by, from}]}] in derivation order; a file with no relatives is its own pipeline of one */
+  pipelines() {
+    const kids = new Map(); const roots = [];
+    for (const [p, f] of files) { const parent = f.meta?.from?.find((x) => files.has(x) && x !== p); if (parent && vfs.root(p) !== p) { if (!kids.has(parent)) kids.set(parent, []); kids.get(parent).push(p); } else roots.push(p); }
+    const order = (a, b) => (files.get(a).mtime - files.get(b).mtime) || a.localeCompare(b);
+    return roots.sort(order).map((root) => {
+      const out = []; const walk = (p, depth) => { const f = files.get(p); out.push({ path: p, depth, by: f.meta?.by, from: f.meta?.from }); for (const k of (kids.get(p) || []).sort(order)) walk(k, depth + 1); };
+      walk(root, 0); return { root, files: out };
+    });
+  },
 };
 
 // ───────────────────────────────────────────────────────── registry ──
@@ -220,7 +239,30 @@ async function run(name, args = {}, parent) {
     progress: (fraction, note) => emit('progress', { tool: name, fraction, note }),
     nested: !!parent,
   };
-  return tool.run(a, ctx);
+  const t0 = Date.now();
+  const result = await tool.run(a, ctx);
+  stamp(name, a, result, t0);
+  return result;
+}
+
+// Record where each output came from: the VFS files named in the arguments. A nested call (a tool calling another
+// tool) stamps its own outputs first; the outer call only fills in what is still unlabelled, so the most specific
+// step wins and the chain stays intact.
+function stamp(tool, args, result, t0) {
+  const outs = outputsOf(result); if (!outs.length) return;
+  const inputs = [];
+  const scan = (v) => { if (typeof v === 'string') { if (v.length < 512 && files.has(v.replace(/^vfs:\/\//, '').replace(/^\/+/, ''))) inputs.push(norm(v)); } else if (Array.isArray(v)) v.slice(0, 200).forEach(scan); };
+  for (const [k, v] of Object.entries(args)) if (!/^output/i.test(k)) scan(v);
+  const outSet = new Set(outs.map((o) => o.path));
+  const from = [...new Set(inputs)].filter((p) => !outSet.has(p));
+  let changed = false;
+  for (const o of outs) {
+    const f = files.get(o.path); if (!f || f.mtime < t0 - 5) continue; // not written by this call (e.g. "unchanged")
+    if (f.meta.by) continue;
+    f.meta.by = tool; if (from.length) f.meta.from = from.slice(0, 20);
+    persist.put(o.path, f); changed = true;
+  }
+  if (changed) emit('vfs', { op: 'lineage' });
 }
 
 let seq = 0;

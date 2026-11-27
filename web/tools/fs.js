@@ -6,9 +6,24 @@ const MAX_INLINE = 262144;
 
 register({
   name: 'fs.list', readOnly: true,
-  description: 'List files in the in-memory virtual file system (VFS). Every tool reads its inputs from and writes its outputs to the VFS by path.',
-  schema: { properties: { prefix: { type: 'string', description: 'Only paths starting with this prefix', default: '' } } },
-  run: ({ prefix }) => { const files = vfs.list(prefix); return { count: files.length, totalBytes: files.reduce((a, f) => a + f.bytes, 0), files }; },
+  description: 'List files in the virtual file system (VFS). Every tool reads its inputs from and writes its outputs to the VFS by path. Each file reports `pipeline` (the source file it ultimately derives from), `from` (its direct inputs) and `by` (the tool that made it), so related outputs can be told apart from unrelated ones.',
+  schema: { properties: { prefix: { type: 'string', description: 'Only paths starting with this prefix', default: '' }, pipeline: { type: 'string', description: 'Only files of the same pipeline as this path (everything derived from the same source file)' } } },
+  run: ({ prefix, pipeline }) => {
+    let files = vfs.list(prefix).map((f) => ({ ...f, pipeline: vfs.root(f.path) }));
+    if (pipeline) { const r = vfs.root(pipeline); files = files.filter((f) => f.pipeline === r); }
+    return { count: files.length, totalBytes: files.reduce((a, f) => a + f.bytes, 0), pipelines: new Set(files.map((f) => f.pipeline)).size, files };
+  },
+});
+
+register({
+  name: 'fs.pipelines', readOnly: true,
+  description: 'Group the VFS files by pipeline: each group is one source file followed by everything derived from it, in derivation order, with the tool that produced each step and its depth in the chain. Use it to see which outputs belong together, or pass `path` for just the pipeline that file is part of.',
+  schema: { properties: { path: { type: 'string', description: 'Only the pipeline containing this file' } } },
+  run({ path }) {
+    let groups = vfs.pipelines();
+    if (path) { const r = vfs.root(path); vfs.stat(path); groups = groups.filter((g) => g.root === r); }
+    return { count: groups.length, pipelines: groups.map((g) => ({ root: g.root, files: g.files.length, bytes: g.files.reduce((n, f) => n + vfs.stat(f.path).bytes, 0), steps: g.files.map((f) => ({ path: f.path, depth: f.depth, by: f.by, from: f.from })) })) };
+  },
 });
 
 register({
@@ -100,10 +115,11 @@ register({
 register({
   name: 'fs.rm',
   description: 'Delete VFS files by exact path, or everything under a prefix with all=true.',
-  schema: { properties: { path: { type: 'string', description: 'VFS path, or prefix when all=true' }, all: { type: 'boolean', default: false, description: 'Treat path as a prefix and delete every match ("" wipes the VFS)' } } },
-  run({ path = '', all }) {
+  schema: { properties: { path: { type: 'string', description: 'VFS path, or prefix when all=true' }, all: { type: 'boolean', default: false, description: 'Treat path as a prefix and delete every match ("" wipes the VFS)' }, pipeline: { type: 'boolean', default: false, description: 'Delete the whole pipeline this file belongs to (its source and everything derived from it)' } } },
+  run({ path = '', all, pipeline }) {
     if (!all && !path) throw new Error('missing required arg "path"');
-    const targets = all ? vfs.list(path).map((f) => f.path) : [path];
+    const root = pipeline ? vfs.root(path) : null;
+    const targets = pipeline ? vfs.list().filter((f) => vfs.root(f.path) === root).map((f) => f.path) : all ? vfs.list(path).map((f) => f.path) : [path];
     const removed = targets.filter((p) => vfs.rm(p));
     if (!all && !removed.length) throw new Error(`vfs: no such file "${path}"`);
     return { removed };

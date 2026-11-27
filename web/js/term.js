@@ -166,15 +166,36 @@ async function render(path) {
   } catch (e) { const p = document.createElement('p'); p.className = 'void'; p.textContent = `no preview: ${e.message}`; el.append(p); }
 }
 
+// The file list is grouped by pipeline: a source file, then everything derived from it, indented in derivation
+// order with the tool that made each step. Groups fold; a file with no relatives is listed on its own.
+const folded = new Set();
 function listFiles() {
-  const files = vfs.list().sort((a, b) => a.path.localeCompare(b.path));
-  $('files-sum').textContent = `${files.length} · ${human(files.reduce((a, f) => a + f.bytes, 0))}`;
-  $('vfs').replaceChildren(...files.map((f) => {
-    const li = document.createElement('li'); li.dataset.path = f.path; li.title = f.mime; if (f.path === shown) li.className = 'on';
-    for (const t of [f.path, f.width ? `${f.width}×${f.height}` : f.pages ? `${f.pages}pp` : '', human(f.bytes)]) { const s = document.createElement('span'); s.textContent = t; li.append(s); }
-    li.onclick = () => render(f.path);
+  const groups = vfs.pipelines(); let n = 0, total = 0; const rows = [];
+  const row = (f, cls, lead, tail) => {
+    const st = vfs.stat(f.path); n++; total += st.bytes;
+    const li = document.createElement('li'); li.dataset.path = f.path; li.className = `${cls}${f.path === shown ? ' on' : ''}`;
+    li.title = `${st.mime}${f.by ? ` · by ${f.by}` : ''}${f.from?.length ? ` · from ${f.from.join(', ')}` : ''}`;
+    const name = document.createElement('span'); name.innerHTML = `${lead}${esc(f.path)}${tail || ''}`;
+    const dim = document.createElement('span'); dim.textContent = st.width ? `${st.width}×${st.height}` : st.pages ? `${st.pages}pp` : '';
+    const size = document.createElement('span'); size.textContent = human(st.bytes);
+    li.append(name, dim, size); li.onclick = () => render(f.path);
     return li;
-  }));
+  };
+  for (const g of groups) {
+    if (g.files.length === 1) { rows.push(row(g.files[0], 'solo', '', g.files[0].by ? ` <em>${esc(g.files[0].by)}</em>` : '')); continue; }
+    const shut = folded.has(g.root);
+    const head = row(g.files[0], 'root', `<b class="tw" role="button" aria-label="fold pipeline">${shut ? '▸' : '▾'}</b> `, ` <em>${g.files.length} · ${esc(g.files[0].by || 'source')}</em>`);
+    head.querySelector('.tw').onclick = (e) => { e.stopPropagation(); if (shut) folded.delete(g.root); else folded.add(g.root); listFiles(); };
+    rows.push(head);
+    g.files.slice(1).forEach((f, i, a) => {
+      const last = !a.slice(i + 1).some((x) => x.depth <= f.depth);
+      const li = row(f, 'kid', `<i>${'│ '.repeat(Math.max(0, f.depth - 1))}${last ? '└' : '├'}─</i> `, f.by ? ` <em>${esc(f.by)}</em>` : '');
+      if (shut) li.hidden = true;
+      rows.push(li);
+    });
+  }
+  $('files-sum').textContent = `${n} · ${human(total)}${groups.some((g) => g.files.length > 1) ? ` · ${groups.length} ῥοαί` : ''}`;
+  $('vfs').replaceChildren(...rows);
 }
 
 // ──────────────────────────────────────────────────── files in (human) ──
@@ -285,12 +306,16 @@ async function marquee() {
 async function indicators() {
   const env = await M.run('sys.env');
   const chip = (id, text, cls, tip) => { const e = $(id); if (!e) return; e.textContent = text; e.className = cls || ''; if (tip) e.parentElement.title = tip; };
-  const d = M.diag; const f = d ? await d.probe() : {}; const b = d?.browser() || {};
-  chip('chip-browser', `${(b.name || '?').toLowerCase()} ${b.major ?? ''}`.trim(), '', `${b.name} ${b.version || ''} · ${b.engine} · ${b.os}${b.mobile ? ' · mobile' : ''}`);
-  chip('chip-gpu', env.gpu.available ? (env.gpu.fallback ? 'software' : env.gpu.vendor || 'webgpu') : 'cpu', env.gpu.available && !env.gpu.fallback ? '' : 'off', f.webgpu?.detail || '');
-  chip('chip-wasm', env.wasm.simd ? 'simd' : env.wasm.supported ? 'no simd' : 'none', env.wasm.simd ? '' : 'bad', `simd ${env.wasm.simd ? 'yes' : 'NO'} · threads ${env.wasm.threads ? 'yes' : 'no (static host)'}`);
-  chip('chip-mcp', env.webmcp.registered ? `${env.webmcp.native ? 'native' : 'polyfill'} ${env.webmcp.registered}` : 'off', env.webmcp.registered ? '' : 'off', f.webmcpNative?.detail || '');
-  chip('chip-tools', String(env.tools));
+  const d = M.diag; const b = d?.browser() || {};
+  const chips = (f) => {
+    chip('chip-browser', `${(b.name || '?').toLowerCase()} ${b.major ?? ''}`.trim(), '', `${b.name} ${b.version || ''} · ${b.engine} · ${b.os}${b.mobile ? ' · mobile' : ''}`);
+    chip('chip-gpu', env.gpu.available ? (env.gpu.fallback ? 'software' : env.gpu.vendor || 'webgpu') : 'cpu', env.gpu.available && !env.gpu.fallback ? '' : 'off', f.webgpu?.detail || '');
+    chip('chip-wasm', env.wasm.simd ? 'simd' : env.wasm.supported ? 'no simd' : 'none', env.wasm.simd ? '' : 'bad', `simd ${env.wasm.simd ? 'yes' : 'NO'} · threads ${env.wasm.threads ? 'yes' : 'no (static host)'}`);
+    chip('chip-mcp', env.webmcp.registered ? `${env.webmcp.native ? 'native' : 'polyfill'} ${env.webmcp.registered}` : 'off', env.webmcp.registered ? '' : 'off', f.webmcpNative?.detail || '');
+    chip('chip-tools', String(env.tools));
+  };
+  chips({}); // at once, from what is already known
+  const f = d ? await d.probe() : {}; chips(f); // again with the probe's explanations as tooltips
   // per-room verdict for this browser: a mark on the nav, and a plain explanation if the room you are in is affected
   if (d) {
     const verdicts = await d.rooms();
