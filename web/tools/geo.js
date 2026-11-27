@@ -620,7 +620,7 @@ register({
       L.push('', '## Sample features', '');
       const stepS = Math.max(1, Math.floor(fc.features.length / args.samples));
       for (let k = 0, i = 0; k < args.samples && i < fc.features.length; k++, i += stepS) {
-        const f = fc.features[i]; const g = f.geometry; const c = g && lonlat ? ops.centroidOf(g) : null; const m = g && lonlat ? ops.measureGeom(g, 'haversine') : null;
+        const f = fc.features[i]; const g = f.geometry; const c = g && lonlat ? ops.centroidOf(g) : null; const m = g && lonlat ? ops.measureGeom(g, verts > 300000 ? 'haversine' : 'vincenty') : null;
         const pr = Object.entries(f.properties || {}).filter(([kk, v]) => kk !== 'coordinateProperties' && v !== null && v !== '' && typeof v !== 'object').slice(0, 6).map(([kk, v]) => `${kk}=${JSON.stringify(typeof v === 'string' && v.length > 40 ? v.slice(0, 39) + '…' : v)}`).join(', ');
         L.push(`${k + 1}. #${i} ${g ? g.type : 'no geometry'}${m ? `, ${n(m.vertices)} vertices` : ''}${c ? `, at ${rnd.fmtLat(c[1], 0.001)} ${rnd.fmtLon(c[0], 0.001)}` : ''}${m && m.length ? `, ${n(km(m.length))} km` : ''}${m && m.area ? `, ${n(km2(m.area))} km²` : ''}${pr ? ` — ${pr}` : ''}`);
       }

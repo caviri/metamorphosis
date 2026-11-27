@@ -7,7 +7,7 @@
 html, body { height: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--mono);
-  display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden;
+  display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; overflow: hidden;
   font-variant-ligatures: none; -webkit-font-smoothing: antialiased;
 }
 /* scanlines: a 1-bit ordered veil over everything */
@@ -21,6 +21,16 @@ a { color: var(--key); text-decoration: none; } a:hover { text-decoration: under
 code { color: var(--hi); }
 :focus-visible { outline: 1px dashed var(--phos); outline-offset: 2px; }
 ::-webkit-scrollbar { width: 8px; height: 8px; } ::-webkit-scrollbar-thumb { background: var(--line); } ::-webkit-scrollbar-thumb:hover { background: var(--dim); }
+
+/* ── marquee: the room's tools, drifting right to left ── */
+#marquee { overflow: hidden; white-space: nowrap; background: var(--phos); color: var(--bg); border-bottom: 1px solid var(--line); height: 20px; line-height: 20px; font-size: 12px; }
+#marquee-track { display: inline-flex; will-change: transform; animation: drift var(--drift, 60s) linear infinite; }
+#marquee-track span { padding: 0 14px; }
+#marquee-track span::after { content: "◆"; margin-left: 28px; opacity: .45; }
+#marquee:hover #marquee-track { animation-play-state: paused; }
+#marquee-track span { letter-spacing: .06em; }
+@keyframes drift { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@media (prefers-reduced-motion: reduce) { #marquee-track { animation: none; } }
 
 /* ── head ── */
 #head { position: relative; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line); min-height: 86px; overflow: hidden; }
@@ -92,7 +102,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 3px 
 body.drag #viewport { outline: 1px dashed var(--phos); outline-offset: -6px; }
 
 @media (max-width: 820px) {
-  body { overflow: auto; height: auto; grid-template-rows: auto auto auto auto; }
+  body { overflow: auto; height: auto; grid-template-rows: auto auto auto auto auto; }
   main { grid-template-columns: minmax(0, 1fr); }
   #term { border-right: 0; height: 62vh; }
   #side { grid-template-rows: minmax(240px, 46vh) minmax(120px, auto); border-top: 1px solid var(--line); }

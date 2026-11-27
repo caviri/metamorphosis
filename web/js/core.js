@@ -21,6 +21,8 @@ const MIME = {
   js: 'text/javascript', mjs: 'text/javascript', wasm: 'application/wasm',
   geojson: 'application/geo+json', topojson: 'application/json', kml: 'application/vnd.google-earth.kml+xml', gpx: 'application/gpx+xml', wkt: 'text/plain',
   zip: 'application/zip', gz: 'application/gzip', tar: 'application/x-tar',
+  tgz: 'application/gzip', '7z': 'application/x-7z-compressed', rar: 'application/vnd.rar', bz2: 'application/x-bzip2', xz: 'application/x-xz', sqlite: 'application/vnd.sqlite3',
+  xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12', ods: 'application/vnd.oasis.opendocument.spreadsheet', odt: 'application/vnd.oasis.opendocument.text', epub: 'application/epub+zip', ipynb: 'application/x-ipynb+json', eml: 'message/rfc822', rtf: 'application/rtf',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',

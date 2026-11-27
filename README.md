@@ -42,3 +42,5 @@ node scripts/mu.mjs manifest  # web/tools.json
 `docs/PROTOCOL.md` · `web/llms.txt` · `web/vendor/README.md`
 
 σίδηρος μὲν ὁ πυρήν, φῶς δὲ ἡ κάρτα, σιγὴ δὲ ὁ διακομιστής.
+
+[h4ck1ng.science](https://h4ck1ng.science)

@@ -11,13 +11,13 @@ const MONO = 'ui-monospace, "Cascadia Mono", Consolas, Menlo, "DejaVu Sans Mono"
 export const THEMES = {
   dark: {
     ground: '#050806', ocean: '#07100b', land: '#0e2418', coast: '#2fa862', border: '#1d6039', grat: '#15402a', frame: '#2fa862',
-    text: '#a8f5c8', dim: '#58a77c', halo: '#050806', data: '#ffb000', noData: '#3a4540', other: '#7d8a84',
+    text: '#a8f5c8', dim: '#58a77c', halo: '#050806', ring: '#050806', ringWidth: 1.2, data: '#ffb000', noData: '#3a4540', other: '#7d8a84',
     seq: ['#0e3d7e', '#1757ac', '#2370cd', '#338ced', '#6aabf1', '#9dc8f7', '#cce3fd'],
     cat: ['#338ced', '#e76624', '#00a888', '#d28e05', '#e24d8b', '#0aac23', '#9887ef', '#eb6263'],
   },
   light: {
     ground: '#ffffff', ocean: '#f3f6f9', land: '#e8e5da', coast: '#6f6e66', border: '#b9b5a8', grat: '#d3dae1', frame: '#444444',
-    text: '#151515', dim: '#5d5d5d', halo: '#ffffff', data: '#c2410c', noData: '#d0d0d0', other: '#8c8c8c',
+    text: '#151515', dim: '#5d5d5d', halo: '#ffffff', ring: '#2b2b2b', ringWidth: 0.9, data: '#c2410c', noData: '#d0d0d0', other: '#8c8c8c',
     seq: ['#cce3fd', '#9dc8f7', '#6aabf1', '#338ced', '#2370cd', '#1757ac', '#0e3d7e'],
     cat: ['#257de0', '#f47230', '#00b894', '#f2a600', '#ee7fac', '#008a17', '#6a4ce2', '#ec4647'],
   },
@@ -304,8 +304,8 @@ function makePen(g, v) {
     raw(coords) { return trace(coords, 0, false); },
     /** pixel position of a point, or null when hidden / outside the frame */
     point(c) {
-      if (!P.cyl && P.hidden(c[0], c[1])) return null;
-      const q = px(P.fwd(P.cyl ? lon0 + wrapRel(c[0] - lon0) : c[0], c[1]));
+      let q;
+      if (P.cyl) q = px(P.fwd(lon0 + wrapRel(c[0] - lon0), c[1])); else { const [x, y, cc] = P.az(c[0], c[1]); if (v.kind === 'orthographic') { if (cc < 0) return null; q = px([x, y]); } else { const k = Math.sqrt(2 / Math.max(1e-9, 1 + cc)); q = px([x * k, y * k]); } }
       return q[0] < fx0 || q[0] > fx1 || q[1] < fy0 || q[1] > fy1 ? null : q;
     },
     /** pixel polylines of a line, cut to the frame (for placing tick labels) */
@@ -419,7 +419,7 @@ export async function renderMap(fc, o = {}) {
       const c = col(f); let any = false;
       eachPart(f.geometry, (k, pt) => {
         if (k !== 'point') return; counts.points++; const q = pen.point(pt); if (!q) { counts.hiddenPoints++; return; } any = true;
-        if (pr < 2.5) { g.fillStyle = c; g.fillRect(q[0] - pr, q[1] - pr, pr * 2, pr * 2); } else { g.beginPath(); g.arc(q[0], q[1], pr, 0, Math.PI * 2); g.fillStyle = c; g.fill(); g.strokeStyle = th.halo; g.lineWidth = 1.2; g.stroke(); }
+        if (pr < 2.5) { g.fillStyle = c; g.fillRect(q[0] - pr, q[1] - pr, pr * 2, pr * 2); } else { g.beginPath(); g.arc(q[0], q[1], pr, 0, Math.PI * 2); g.fillStyle = c; g.fill(); g.strokeStyle = th.ring; g.lineWidth = th.ringWidth; g.stroke(); }
       });
       if (any) counts.drawn++;
     }

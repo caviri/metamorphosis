@@ -248,7 +248,7 @@ async function convertWC(p, ctx, src) {
     if (!vcodec) throw new Error(p.vcodec ? `this browser cannot encode ${p.vcodec} at ${size.width}×${size.height} into .${p.format} via WebCodecs` : `no WebCodecs video encoder fits .${p.format} in this browser`);
   }
   // audio plan
-  let acodec = null, sampleRate = p.sampleRate, channels = p.channels, audioCopy = false, abitrate = p.abitrate;
+  let acodec = null, audioCopy = false, ua = null;
   if (sa) {
     const supported = fmtProbe.getSupportedAudioCodecs();
     const srcMb = A2MB[sa.codec] || (sa.codec.startsWith('pcm_') ? sa.codec.replace('pcm_', 'pcm-') : null);
@@ -261,62 +261,71 @@ async function convertWC(p, ctx, src) {
       if (c.startsWith('pcm-') || await ensureAudioEncoder(c)) { acodec = c; break; }
     }
     if (!acodec) throw new Error(p.acodec ? `this browser cannot encode ${p.acodec} audio into .${p.format} via WebCodecs` : `no usable audio encoder for .${p.format} in this browser`);
-    const u = uname(acodec).replace(/^pcm_.*/, 'pcm');
-    const copying = audioCopy = !aTransform && srcMb === acodec;
-    if (!copying) {
-      if (RATES[u]) { const r = sampleRate || sa.sampleRate; if (!RATES[u].includes(r)) sampleRate = RATES[u].find((x) => x >= r) || RATES[u][RATES[u].length - 1]; }
-      if ((channels || sa.channels) > (MAXCH[u] || 8)) channels = MAXCH[u];
-    }
-    abitrate ||= copying ? Math.min(320000, Math.max(defAbr(u, channels || sa.channels) || 0, sa.bitrate || 0)) || undefined : defAbr(u, channels || sa.channels);   // used only if Mediabunny has to re-encode after all
-    // the exact configuration must be encodable (also when "copying" a trimmed track: the cut may force a re-encode of its edges)
-    if (!acodec.startsWith('pcm-') && (!copying || p.start || p.end != null)) {
-      const kind = await ensureAudioEncoder(acodec, { numberOfChannels: channels || sa.channels, sampleRate: sampleRate || sa.sampleRate, ...(abitrate ? { bitrate: abitrate } : {}) }).catch(() => null);
-      if (!kind && !copying) throw new Error(`this browser cannot encode ${u} audio at ${sampleRate || sa.sampleRate} Hz, ${channels || sa.channels} ch${abitrate ? `, ${Math.round(abitrate / 1000)} kbit/s` : ''} via WebCodecs`);
-    }
+    ua = uname(acodec).replace(/^pcm_.*/, 'pcm');
+    audioCopy = !aTransform && srcMb === acodec;
   }
+  // audio parameters for one attempt. copying = we expect Mediabunny to pass the packets through untouched.
+  const audioSetup = async (copying, keepRate) => {
+    let sampleRate = p.sampleRate, channels = p.channels, abitrate = p.abitrate;
+    if (acodec.startsWith('pcm-')) return { sampleRate, channels };
+    if (!copying) {
+      if (RATES[ua]) { const r = sampleRate || sa.sampleRate; if (!RATES[ua].includes(r)) sampleRate = RATES[ua].find((x) => x >= r) || RATES[ua][RATES[ua].length - 1]; }
+      if ((channels || sa.channels) > (MAXCH[ua] || 8)) channels = MAXCH[ua];
+      abitrate ||= keepRate ? Math.min(320000, Math.max(defAbr(ua, channels || sa.channels) || 0, sa.bitrate || 0)) : defAbr(ua, channels || sa.channels);
+    }
+    // the exact configuration must be encodable; even a planned copy may need the encoder (Mediabunny re-encodes when it cannot copy)
+    const kind = await ensureAudioEncoder(acodec, { numberOfChannels: channels || sa.channels, sampleRate: sampleRate || sa.sampleRate, ...(abitrate ? { bitrate: abitrate } : {}) }).catch(() => null);
+    if (!kind && !copying) throw new Error(`this browser cannot encode ${ua} audio at ${sampleRate || sa.sampleRate} Hz, ${channels || sa.channels} ch${abitrate ? `, ${Math.round(abitrate / 1000)} kbit/s` : ''} via WebCodecs`);
+    return { sampleRate, channels, abitrate };
+  };
   const trim = (p.start || p.end != null) ? { ...(p.start ? { start: p.start } : {}), ...(p.end != null ? { end: p.end } : {}) } : undefined;
   const hwEnc = sv && vcodec ? await hwEncodable(lib, vcodec, size.width, size.height) : false;
   const modes = !sv ? ['no-preference'] : p.hardware === 'hardware' ? ['prefer-hardware'] : p.hardware === 'software' ? ['prefer-software'] : (hwEnc && vTransform && await hwDecodableOf(p.input) ? ['prefer-hardware', 'no-preference'] : ['no-preference']);
   let lastErr = null;
-  for (const mode of modes) {
-    const input = await openInput(p.input);
-    const output = new lib.Output({ format: mbFormat(lib, p.format, table), target: new lib.BufferTarget() });
-    tap.video = []; tap.audio = 0; tap.rec++; const wasm0 = wasmUse.n;
-    try {
-      const video = !sv ? { discard: true } : {
-        codec: vcodec, hardwareAcceleration: mode, ...(vTransform ? { forceTranscode: true } : {}),
-        ...(p.width || p.height ? { width: size.width, height: size.height, fit: size.boxed ? (p.fit || 'contain') : 'fill' } : {}),
-        ...(p.rotate ? { rotate: p.rotate, allowTransformationMetadata: false } : {}),
-        ...(p.crop ? { crop: { left: p.crop.x, top: p.crop.y, width: p.crop.width, height: p.crop.height } } : {}),
-        ...(p.fps ? { frameRate: p.fps } : {}),
-        ...(p.vbitrate || p.quality ? { quality: mbQuality(lib, p.vbitrate, p.quality) } : {}),
-      };
-      const audio = !sa ? { discard: true } : { codec: acodec, ...(p.copy === 'never' ? { forceTranscode: true } : {}), ...(abitrate && !acodec.startsWith('pcm-') ? { quality: mbQuality(lib, abitrate) } : {}), ...(sampleRate ? { sampleRate } : {}), ...(channels ? { numberOfChannels: channels } : {}) };
-      const copy = p.copy === 'never' ? false : p.copy === 'forced' ? { mode: 'forced', shiftTolerance: Infinity, boundaryPolicy: 'expand' } : {};
-      const conv = await lib.Conversion.init({ input, output, video, audio, trim, copy, tracks: 'primary', showWarnings: false });
-      const lost = conv.discardedTracks.filter((d) => d.reason !== 'discarded_by_user' && d.track.type !== 'subtitle');
-      if (!conv.isValid || lost.length) throw new Error(`webcodecs cannot do this conversion (${lost.map((d) => `${d.track.type} track: ${d.reason}`).join('; ') || 'no usable tracks'})`);
-      let last = 0;
-      conv.onProgress = (f) => { const now = performance.now(); if (now - last > 200) { last = now; ctx.progress(f, 'webcodecs'); } };
-      await conv.execute();
-      const bytes = new Uint8Array(output.target.buffer);
-      const encoded = tap.video.length > 0;
-      return {
-        bytes,
-        info: {
-          backend: 'webcodecs', hardwareAccelerated: sv ? (encoded ? hwVerdict(mode, hwEnc) : false) : false,
-          ...(sv ? { videoCodec: uname(vcodec), videoReencoded: encoded } : {}),
-          ...(sa ? (() => {
-            const wasm = audioEncoderKind(acodec) === 'wasm';
-            const re = acodec.startsWith('pcm-') ? !audioCopy : tap.audio > 0 || wasmUse.n > wasm0;      // observed: did an audio encoder start?
-            return { audioCodec: uname(acodec).replace(/^pcm_.*/, 'pcm'), audioReencoded: re, ...(re && !acodec.startsWith('pcm-') ? { audioEncoder: wasm ? 'wasm' : 'webcodecs' } : {}) };
-          })() : {}),
-          ...(sv && encoded && hwVerdict(mode, hwEnc) === null ? { hardwareNote: 'a hardware encoder exists and the browser chose between it and software (WebCodecs does not report which); pass hardware=hardware or hardware=software to force one' } : {}),
-        },
-      };
-    } catch (e) { lastErr = e; await output.cancel().catch(() => {}); if (oom(e) !== e) break; } finally { tap.rec--; input.dispose(); }
+  attempts: for (const mode of modes) {
+    for (let pass = 0; pass < 2; pass++) {
+      const copying = audioCopy && pass === 0;
+      const input = await openInput(p.input);
+      const output = new lib.Output({ format: mbFormat(lib, p.format, table), target: new lib.BufferTarget() });
+      tap.video = []; tap.audio = 0; tap.rec++; const wasm0 = wasmUse.n;
+      try {
+        const as = sa ? await audioSetup(copying, pass === 1) : null;
+        const video = !sv ? { discard: true } : {
+          codec: vcodec, hardwareAcceleration: mode, ...(vTransform ? { forceTranscode: true } : {}),
+          ...(p.width || p.height ? { width: size.width, height: size.height, fit: size.boxed ? (p.fit || 'contain') : 'fill' } : {}),
+          ...(p.rotate ? { rotate: p.rotate, allowTransformationMetadata: false } : {}),
+          ...(p.crop ? { crop: { left: p.crop.x, top: p.crop.y, width: p.crop.width, height: p.crop.height } } : {}),
+          ...(p.fps ? { frameRate: p.fps } : {}),
+          ...(p.vbitrate || p.quality ? { quality: mbQuality(lib, p.vbitrate, p.quality) } : {}),
+        };
+        // note: giving a quality/bitrate makes Mediabunny re-encode, so a planned copy passes none
+        const audio = !sa ? { discard: true } : { codec: acodec, ...(p.copy === 'never' ? { forceTranscode: true } : {}), ...(!copying && as.abitrate ? { quality: mbQuality(lib, as.abitrate) } : {}), ...(as.sampleRate ? { sampleRate: as.sampleRate } : {}), ...(as.channels ? { numberOfChannels: as.channels } : {}) };
+        const copy = p.copy === 'never' ? false : p.copy === 'forced' ? { mode: 'forced', shiftTolerance: Infinity, boundaryPolicy: 'expand' } : {};
+        const conv = await lib.Conversion.init({ input, output, video, audio, trim, copy, tracks: 'primary', showWarnings: false });
+        const lost = conv.discardedTracks.filter((d) => d.reason !== 'discarded_by_user' && d.track.type !== 'subtitle');
+        if (!conv.isValid || lost.length) throw new Error(`webcodecs cannot do this conversion (${lost.map((d) => `${d.track.type} track: ${d.reason}`).join('; ') || 'no usable tracks'})`);
+        let last = 0;
+        conv.onProgress = (f) => { const now = performance.now(); if (now - last > 200) { last = now; ctx.progress(f, 'webcodecs'); } };
+        await conv.execute();
+        const encoded = tap.video.length > 0;
+        const aEncoded = !!sa && (acodec.startsWith('pcm-') ? !audioCopy : tap.audio > 0 || wasmUse.n > wasm0);      // observed: did an audio encoder start?
+        if (copying && aEncoded && !acodec.startsWith('pcm-') && p.copy !== 'forced') {     // it re-encoded after all, at its own default bitrate: do it again at the source's bitrate
+          ctx.log(`${ua} audio could not be copied and was re-encoded; repeating at the source bitrate`);
+          continue;
+        }
+        return {
+          bytes: new Uint8Array(output.target.buffer),
+          info: {
+            backend: 'webcodecs', hardwareAccelerated: sv ? (encoded ? hwVerdict(mode, hwEnc) : false) : false,
+            ...(sv ? { videoCodec: uname(vcodec), videoReencoded: encoded } : {}),
+            ...(sa ? { audioCodec: ua, audioReencoded: aEncoded, ...(aEncoded && !acodec.startsWith('pcm-') ? { audioEncoder: audioEncoderKind(acodec) } : {}) } : {}),
+            ...(sv && encoded && hwVerdict(mode, hwEnc) === null ? { hardwareNote: 'a hardware encoder exists and the browser chose between it and software (WebCodecs does not report which); pass hardware=hardware or hardware=software to force one' } : {}),
+          },
+        };
+      } catch (e) { lastErr = e; await output.cancel().catch(() => {}); if (oom(e) !== e) break attempts; continue attempts; } finally { tap.rec--; input.dispose(); }
+    }
   }
-  throw oom(lastErr);
+  throw oom(lastErr || new Error('conversion failed'));
 }
 async function hwDecodableOf(path) {
   const input = await openInput(path);

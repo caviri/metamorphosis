@@ -358,7 +358,7 @@ register({
 // ════════════════════════════════════════════════════════════ text ══
 register({
   name: 'text.stats', readOnly: true,
-  description: 'Measure a text file: bytes, characters, words, lines, paragraphs, sentences (approximate), reading time, a language and script guess, and an estimated LLM token count. The token figure is a character-class heuristic, NOT a real tokenizer: expect about \u00b115% on English prose and \u00b125\u201335% on code, tables, CJK or mixed-language text, and real tokenizers differ from each other too \u2014 use it to budget context, not to bill. Language is guessed from scripts plus stop-word frequency for 13 Latin-script languages; null when unsure.',
+  description: 'Measure a text file: bytes, characters, words, lines, paragraphs, sentences (approximate), reading time, a language and script guess, and an estimated LLM token count. The token figure is a character-class heuristic, NOT a real tokenizer: its weights were fitted to OpenAI cl100k/o200k counts on ten sample texts, where it landed within \u00b15% on English prose and between \u221219% (JSON) and +19% (code-heavy docs) overall; it was not measured against Claude tokenizers, which usually count more tokens \u2014 use it to budget context with headroom, not to bill. Language is guessed from scripts plus stop-word frequency for 13 Latin-script languages; null when unsure.',
   schema: { properties: { input: { type: 'string', description: 'VFS path of a text file (txt, md, csv, json, code\u2026)' } }, required: ['input'] },
   examples: ['text.stats input=report.md'],
   async run({ input }) {

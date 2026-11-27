@@ -231,8 +231,29 @@ function nav() {
   el.innerHTML = a(M.room.url(''), 'ἀρχή', 'hub', M.room.id === 'hub') + M.rooms.map((r) => a(M.room.url(r.id), r.gr, r.id, M.room.ids.includes(r.id))).join('');
 }
 
+// the strip at the very top: this room's tools (on the hub: every room's, from tools.json), right to left, in Greek:
+// the family as a Greek word, the verb transliterated into Greek letters. Hover shows the real name.
+const GR_DOMAIN = { image: 'εἰκών', analysis: 'ἀνάλυσις', synth: 'σύνθεσις', dither: 'κόκκος', gpu: 'φῶς', vision: 'ὅρασις', pdf: 'βίβλος', video: 'κίνησις', audio: 'φωνή', geo: 'γῆ', data: 'ἀριθμός', file: 'ἀρχεῖον', hash: 'σύνοψις', encode: 'κῶδιξ', archive: 'θήκη', doc: 'λόγος', text: 'κείμενον', claude: 'νοῦς', fs: 'ὕλη', sys: 'σύστημα' };
+const GR_PAIR = { th: 'θ', ph: 'φ', ch: 'χ', ps: 'ψ', ks: 'ξ', ou: 'ου', ee: 'η', oo: 'ω' };
+const GR_ONE = { a: 'α', b: 'β', c: 'κ', d: 'δ', e: 'ε', f: 'φ', g: 'γ', h: 'η', i: 'ι', j: 'ι', k: 'κ', l: 'λ', m: 'μ', n: 'ν', o: 'ο', p: 'π', q: 'κ', r: 'ρ', s: 'σ', t: 'τ', u: 'υ', v: 'β', w: 'ω', x: 'ξ', y: 'υ', z: 'ζ' };
+function greek(word) {
+  const w = word.toLowerCase(); let out = '';
+  for (let i = 0; i < w.length; i++) { const two = GR_PAIR[w.slice(i, i + 2)]; if (two) { out += two; i++; } else out += GR_ONE[w[i]] ?? w[i]; }
+  return out.replace(/σ$/, 'ς');
+}
+const greekTool = (name) => { const [d, v] = name.split('.'); return `${GR_DOMAIN[d] || greek(d)}·${greek(v)}`; };
+async function marquee() {
+  const track = $('marquee-track'); if (!track) return;
+  let names = [...M.tools.values()].filter((t) => M.exposed(t) && !['fs', 'sys'].includes(t.domain)).map((t) => t.name).sort();
+  if (M.room.id === 'hub') { try { const m = await (await fetch(new URL('tools.json', M.room.root))).json(); names = m.tools.map((t) => t.name).filter((n) => !/^(fs|sys)\./.test(n)); } catch { /* manifest not published yet */ } }
+  if (!names.length) names = [...M.tools.keys()].sort();
+  const run = names.map((n) => `<span title="${esc(n)}">${esc(greekTool(n))}</span>`).join('');
+  track.innerHTML = run + run; // two copies: the loop is seamless at -50%
+  track.style.setProperty('--drift', `${Math.max(30, names.length * 2.2)}s`);
+}
+
 export async function afterBoot() {
-  nav(); listFiles();
+  nav(); listFiles(); marquee();
   const env = await M.run('sys.env');
   const chip = (id, text, off) => { const e = $(id); e.textContent = text; e.classList.toggle('off', !!off); };
   chip('chip-gpu', env.gpu.available ? (env.gpu.vendor || 'webgpu') : 'cpu', !env.gpu.available);

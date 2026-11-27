@@ -524,7 +524,7 @@ export async function htmlToMd(text, c) {
   let md = await H.domToMarkdown(root, c);
   if (c.mainContentOnly && !root.querySelector('h1')) {
     // the page's own H1 often sits outside the article container: put the title back unless a heading already says it
-    const want = h1s.length === 1 ? h1s[0] : title; const have = [...root.querySelectorAll('h2, h3')].map((h) => norm(h.textContent).toLowerCase());
+    const want = h1s.length === 1 && (!title || title.toLowerCase().includes(h1s[0].toLowerCase())) ? h1s[0] : title || h1s[0]; const have = [...root.querySelectorAll('h2, h3')].map((h) => norm(h.textContent).toLowerCase());
     if (want && !have.some((h) => h && (h === want.toLowerCase() || want.toLowerCase().startsWith(h)))) { md = `# ${escMd(want)}\n\n${md}`; main.titleAdded = want; }
   }
   const meta = { lang: doc.documentElement.getAttribute('lang') || undefined, description: doc.querySelector('meta[name="description"]')?.getAttribute('content') || undefined, urlsRewritten: base ? rewritten : undefined, baseUrl: base || undefined };

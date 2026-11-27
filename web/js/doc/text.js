@@ -1,33 +1,34 @@
 // text helpers for doc.* / text.* — pure functions (no DOM, no VFS) so they can also be exercised from node.
 
 // ───────────────────────────────────────────────────── token estimate ──
-// NOT a tokenizer. A character-class heuristic tuned to land near BPE tokenizers (GPT/Claude families):
-//   ASCII word ≤ 7 letters = 1 token, longer = ceil(len / 4.5); digits = ceil(len / 3); other-script words = ceil(len / 3);
-//   each CJK ideograph / kana / hangul syllable = 1; each punctuation mark = 1 (runs of one repeated mark = ceil(len / 4));
-//   a run of line breaks = ceil(n / 2); a single space is free, a longer run of spaces/tabs = ceil(len / 8).
-export const TOKEN_HEURISTIC = 'character-class heuristic, not a tokenizer: ASCII word \u22647 letters = 1 token, longer = ceil(len/4.5); digit run = ceil(len/3); non-ASCII word = ceil(len/3); CJK/kana/hangul char = 1; punctuation mark = 1 (repeated mark run = ceil(len/4)); newline run = ceil(n/2); single space free. Expected error vs a real BPE tokenizer: about \u00b115% on English prose, \u00b125\u201335% on code, tables, CJK and mixed-language text; tokenizers also differ from each other by 10\u201340%.';
-const TOKEN_RE = /[A-Za-z]+(?![\p{L}\p{M}])|[0-9]+|[ \t]+|[\r\n]+|[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]|[\p{L}\p{M}]+|[\s\S]/gu;
-export function estimateTokens(s) {
+// NOT a tokenizer. A character-class heuristic whose weights were fitted (grid search, .scratch calibration) against
+// tiktoken cl100k_base and o200k_base on ten samples: English prose, Markdown with many URLs, technical docs with code,
+// Python, JavaScript, JSON, German, Russian, Japanese and Chinese. Worst sample error after fitting: 19%.
+//   ASCII word ≤ 8 letters = 1 token, longer = len / 4; digits = len / 2; non-ASCII word = len / 2.5;
+//   each CJK ideograph / kana / hangul syllable = 1.1; each punctuation mark = 0.6 (a repeated mark adds 0.25);
+//   a run of line breaks = 1; a single space is free, a longer run of spaces/tabs = 1; other symbols / emoji = 1.5.
+export const TOKEN_HEURISTIC = 'character-class heuristic, NOT a tokenizer: ASCII word of \u22648 letters = 1 token, longer = len/4; digits = len/2; non-ASCII word = len/2.5; CJK/kana/hangul char = 1.1; punctuation mark = 0.6; newline run = 1; single space free; summed and rounded up. Weights were fitted against OpenAI cl100k_base/o200k_base on 10 samples (English prose, URL-heavy Markdown, technical docs, Python, JS, JSON, German, Russian, Japanese, Chinese): errors ranged from \u221219% (JSON) to +19% (code-heavy docs), within \u00b15% on English prose. Not measured against Claude tokenizers, which usually produce more tokens than these (assume this estimate can be 10\u201340% low for Claude); keep headroom.';
+const TOKEN_RE = /[A-Za-z]+(?![\p{L}\p{M}])|[0-9]+|[ \t]+|[\r\n]+|[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u8c48-\ufaff]|[\p{L}\p{M}]+|[\s\S]/gu;
+/** fractional estimate; estimateTokens() rounds it up */
+export function estimateTokensRaw(s) {
   if (!s) return 0;
-  let t = 0; let m; let prev = ''; let run = 0;
+  let t = 0; let m; let prev = '';
   TOKEN_RE.lastIndex = 0;
   while ((m = TOKEN_RE.exec(s))) {
     const w = m[0]; const c = w.charCodeAt(0); const len = w.length;
-    if (c === 32 || c === 9) { if (len > 1) t += Math.ceil(len / 8); prev = ''; continue; }
-    if (c === 10 || c === 13) { let n = 0; for (let i = 0; i < len; i++) if (w.charCodeAt(i) === 10) n++; t += Math.ceil((n || 1) / 2); prev = ''; continue; }
-    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) { t += len <= 7 ? 1 : Math.ceil(len / 4.5); prev = ''; continue; }
-    if (c >= 48 && c <= 57) { t += Math.ceil(len / 3); prev = ''; continue; }
-    if (len === 1 && c < 128) { // punctuation: collapse runs of the same mark
-      if (w === prev) { run++; if (run % 4 === 0) t++; } else { t++; prev = w; run = 0; }
-      continue;
-    }
+    if (c === 32 || c === 9) { if (len > 1) t += 1; prev = ''; continue; }
+    if (c === 10 || c === 13) { t += 1; prev = ''; continue; }
+    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) { t += len <= 8 ? 1 : len / 4; prev = ''; continue; }
+    if (c >= 48 && c <= 57) { t += len / 2; prev = ''; continue; }
+    if (len === 1 && c < 128) { if (w === prev) t += 0.25; else { t += 0.6; prev = w; } continue; }
     prev = '';
-    if (len === 1 && ((c >= 0x3040 && c <= 0x30ff) || (c >= 0x3400 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xf900 && c <= 0xfaff))) { t += 1; continue; }
-    if (/^[\p{L}\p{M}]/u.test(w)) { t += Math.max(1, Math.ceil(len / 3)); continue; }
-    t += len > 1 ? 2 : 1; // astral symbol / emoji = 2, other BMP symbol = 1
+    if (len === 1 && ((c >= 0x3040 && c <= 0x30ff) || (c >= 0x3400 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xf900 && c <= 0xfaff))) { t += 1.1; continue; }
+    if (/^[\p{L}\p{M}]/u.test(w)) { t += len / 2.5; continue; }
+    t += 1.5;
   }
   return t;
 }
+export const estimateTokens = (s) => Math.ceil(estimateTokensRaw(s) - 1e-9);
 
 export function utf8Length(s) {
   let n = 0;
@@ -95,7 +96,7 @@ export function guessLanguage(text) {
 }
 
 export function splitSentences(text) {
-  return text.split(/(?<=[.!?\u3002\uff01\uff1f]["'\u201d\u2019)\]]*)\s+|\n{2,}/u).filter((s) => /[\p{L}\p{N}]/u.test(s));
+  return text.split(/(?<=[.!?\u3002\uff01\uff1f]["'\u201d\u2019)\]]*)\s+|(?<=[\u3002\uff01\uff1f])(?=[^\s\u3002\uff01\uff1f\u300d\u300f\uff09])|\n{2,}/u).filter((s) => /[\p{L}\p{N}]/u.test(s));
 }
 
 export function textStats(text) {
@@ -187,19 +188,19 @@ function hardSplit(text, start, end, cap, out, rank) {
   const words = seg.match(/\s*\S+\s*/g) || [seg];
   let pos = start; let first = true;
   for (const w of words) {
-    const tok = estimateTokens(w);
+    const tok = estimateTokensRaw(w);
     if (tok <= cap) { out.push({ start: pos, end: pos + w.length, rank: first ? rank : 0.5, tokens: tok }); pos += w.length; first = false; continue; }
     const cps = [...w]; let buf = ''; let bufStart = pos;
     for (const cp of cps) {
-      if (buf && estimateTokens(buf + cp) > cap) { out.push({ start: bufStart, end: bufStart + buf.length, rank: first ? rank : 0, tokens: estimateTokens(buf) }); first = false; bufStart += buf.length; buf = ''; }
+      if (buf && estimateTokensRaw(buf + cp) > cap) { out.push({ start: bufStart, end: bufStart + buf.length, rank: first ? rank : 0, tokens: estimateTokensRaw(buf) }); first = false; bufStart += buf.length; buf = ''; }
       buf += cp;
     }
-    if (buf) { out.push({ start: bufStart, end: bufStart + buf.length, rank: first ? rank : 0, tokens: estimateTokens(buf) }); first = false; }
+    if (buf) { out.push({ start: bufStart, end: bufStart + buf.length, rank: first ? rank : 0, tokens: estimateTokensRaw(buf) }); first = false; }
     pos += w.length;
   }
 }
 function splitBlock(text, b, cap, out) {
-  const whole = estimateTokens(text.slice(b.start, b.end));
+  const whole = estimateTokensRaw(text.slice(b.start, b.end));
   if (whole <= cap) { out.push({ start: b.start, end: b.end, rank: b.rank, tokens: whole }); return; }
   // lines (code) or sentences (prose), keeping trailing whitespace with the piece before it
   const seg = text.slice(b.start, b.end);
@@ -208,7 +209,7 @@ function splitBlock(text, b, cap, out) {
   re.lastIndex = 0;
   while ((m = re.exec(seg)) && guard++ < 1e7) {
     if (!m[0]) { if (re.lastIndex >= seg.length) break; re.lastIndex++; continue; }
-    const s = b.start + m.index; const e = s + m[0].length; const tok = estimateTokens(m[0]);
+    const s = b.start + m.index; const e = s + m[0].length; const tok = estimateTokensRaw(m[0]);
     const rank = first ? b.rank : (b.kind === 'code' || b.kind === 'table' || seg.charCodeAt(m.index - 1) === 10 ? 2 : 1);
     if (tok <= cap) out.push({ start: s, end: e, rank, tokens: tok }); else hardSplit(text, s, e, cap, out, rank);
     first = false;
