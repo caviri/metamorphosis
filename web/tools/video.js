@@ -214,13 +214,15 @@ async function finish(path, bytes, mime) {
   return { stat, info };
 }
 /** run `wc` and/or `ff` according to the backend argument; auto falls back to ffmpeg when WebCodecs cannot do it */
-async function pick(backend, ctx, wc, ff, { ffOnly = null } = {}) {
+async function pick(backend, ctx, wc, ff, { ffOnly = null, strict = false } = {}) {
   if (backend === 'ffmpeg') return ff(null);
+  if (strict && (ffOnly || !hasWebCodecs())) throw new Error(`hardware=hardware cannot be honoured: ${ffOnly || 'this browser has no WebCodecs'} (ffmpeg.wasm is CPU only)`);
   if (ffOnly) { if (backend === 'webcodecs') throw new Error(`backend=webcodecs cannot do this: ${ffOnly}. Use backend=auto or ffmpeg.`); return ff(ffOnly); }
   if (!hasWebCodecs()) { if (backend === 'webcodecs') throw new Error('this browser has no WebCodecs (VideoEncoder/VideoDecoder/AudioEncoder); use backend=ffmpeg'); return ff('WebCodecs is not available in this browser'); }
   try { return await wc(); } catch (e) {
     const err = oom(e);
     if (backend === 'webcodecs' || err !== e) throw err;
+    if (strict) throw new Error(`${msgOf(e)} — not falling back to ffmpeg.wasm (CPU) because hardware=hardware was requested`);
     ctx.warn(`webcodecs path failed (${msgOf(e)}); falling back to ffmpeg.wasm`);
     try { return await ff(msgOf(e).slice(0, 240)); } catch (e2) { throw new Error(`webcodecs failed: ${msgOf(e)} — and the ffmpeg fallback failed too: ${msgOf(e2)}`); }
   }
@@ -422,7 +424,7 @@ async function runConvert(p, ctx, src, outPath) {
   if (p.start != null && p.end != null && p.end <= p.start) throw new Error(`end (${p.end}) must be greater than start (${p.start})`);
   if (p.start && src.duration && p.start >= src.duration) throw new Error(`start (${p.start}s) is beyond the end of the file (${src.duration}s)`);
   if (p.end != null && src.duration && p.end > src.duration) p.end = undefined;
-  const { bytes, info } = await pick(p.backend, ctx, () => { guard(p.input); return convertWC(p, ctx, src); }, (reason) => convertFF(p, ctx, src, reason), { ffOnly });
+  const { bytes, info } = await pick(p.backend, ctx, () => { guard(p.input); return convertWC(p, ctx, src); }, (reason) => convertFF(p, ctx, src, reason), { ffOnly, strict: p.hardware === 'hardware' });
   const { stat, info: outInfo } = await finish(outPath, bytes, cont.mime);
   ctx.progress(1, 'done');
   return { output: stat, ...info, ...brief(outInfo) };
@@ -557,6 +559,7 @@ async function grabFrames(path, src, times, size, a, ctx, onFrame, span = [0, 1]
     } finally { input.dispose(); }
   };
   const ff = (reason) => ffJob(ctx, async (job) => {
+    job.stateless = true;                                              // one short run per frame: the worker may be swapped in between
     const inp = job.input(path); let grabbed = 0;
     const back = src.video?.fps ? 1 / src.video.fps - 0.002 : 0;      // -ss lands on the first frame at/after the time; step back so we get the frame SHOWN at that time
     for (let i = 0; i < times.length; i++) {
@@ -566,8 +569,8 @@ async function grabFrames(path, src, times, size, a, ctx, onFrame, span = [0, 1]
       prog(i + 1);
     }
     return { backend: 'ffmpeg', hardwareAccelerated: false, grabbed, ...(reason ? { fallbackReason: reason } : {}) };
-  });
-  return pick(a.backend, ctx, wc, ff, { ffOnly: src.backend === 'ffmpeg' ? `the input container (${src.container}) is only readable by ffmpeg` : null });
+  }, { retry: false });
+  return pick(a.backend, ctx, wc, ff, { strict: a.hardware === 'hardware', ffOnly: src.backend === 'ffmpeg' ? `the input container (${src.container}) is only readable by ffmpeg` : null });
 }
 function frameSize(sv, a, dflt) {
   let w = sv.width, h = sv.height;
@@ -849,7 +852,7 @@ register({
       res = await pick(a.backend, ctx, () => {
         a.inputs.forEach((p) => guard(p));
         return pipelineWC(infos.map((info, i) => ({ path: a.inputs[i], info })), { format, vcodec, width: size.width, height: size.height, fps: a.fps, quality: a.quality, hardware: a.hardware, audio: anyAudio, sampleRate: fa?.sampleRate || 48000, channels: Math.min(2, fa?.channels || 2) }, ctx);
-      }, ffEnc, { ffOnly: infos.some((i) => i.backend === 'ffmpeg') ? 'at least one clip is in a container only ffmpeg reads' : null });
+      }, ffEnc, { strict: a.hardware === 'hardware', ffOnly: infos.some((i) => i.backend === 'ffmpeg') ? 'at least one clip is in a container only ffmpeg reads' : null });
     }
     const { stat, info } = await finish(outPath, res.bytes, CONTAINERS[format].mime);
     ctx.progress(1, 'done');
@@ -891,7 +894,7 @@ register({
       args.push('-f', cont.ff, ...(format === 'mp4' || format === 'mov' ? ['-movflags', '+faststart'] : []), out);
       await job.exec(args, { duration: src.duration });
       return { bytes: await job.read(out), info: { backend: 'ffmpeg', hardwareAccelerated: false, videoCodec: vc, audioMethod: keepAudio ? 'atempo (pitch preserved)' : 'none', ...(reason ? { fallbackReason: reason } : {}) } };
-    }), { ffOnly: src.backend === 'ffmpeg' ? `the input container (${src.container}) is only readable by ffmpeg` : !CONTAINERS[format].mbf ? `.${format} is written by ffmpeg only` : null });
+    }), { strict: a.hardware === 'hardware', ffOnly: src.backend === 'ffmpeg' ? `the input container (${src.container}) is only readable by ffmpeg` : !CONTAINERS[format].mbf ? `.${format} is written by ffmpeg only` : null });
     const { stat, info } = await finish(outPath, res.bytes, CONTAINERS[format].mime);
     ctx.progress(1, 'done');
     return { output: stat, ...res.info, factor: a.factor, sourceDuration: src.duration, expectedDuration: r3(src.duration / a.factor), ...brief(info) };
@@ -1116,9 +1119,9 @@ register({
       }, [0, 0.6]);
       if (last < 0) throw new Error('no frame could be decoded');
       const count = last + 1;
-      const bytes = await ffJob(ctx, async (job, f) => {
+      const bytes = await ffJob(ctx, async (job) => {
         const rf = job.tmp('frames.rgba'), o = job.tmp('out.gif');
-        await f.writeFile(rf, count === nFrames ? raw : raw.slice(0, count * w * h * 4)); raw = null;
+        await job.writeOwned(rf, raw.slice(0, count * w * h * 4));       // a copy: the job may be retried on a fresh worker
         await job.exec(['-f', 'rawvideo', '-pixel_format', 'rgba', '-video_size', `${w}x${h}`, '-framerate', String(a.fps), '-i', rf, '-filter_complex', `[0:v:0]${graph('')}`, '-loop', String(a.loop), '-f', 'gif', o], { duration: dur, span: [0.6, 1] });
         return job.read(o);
       });
@@ -1207,7 +1210,7 @@ register({
       args.push('-t', String(totalFrames / a.fps), '-f', cont.ff, ...(format === 'mp4' || format === 'mov' ? ['-movflags', '+faststart'] : []), out);
       await job.exec(args, { duration: totalFrames / a.fps, span: [0.3, 1] });
       return { bytes: await job.read(out), info: { backend: 'ffmpeg', hardwareAccelerated: false, videoCodec: vc, ...(reason ? { fallbackReason: reason } : {}) } };
-    }));
+    }), { strict: a.hardware === 'hardware' });
     let { stat, info } = await finish(outPath, res.bytes, CONTAINERS[format].mime);
     let soundtrack;
     if (a.audio) {

@@ -13,7 +13,7 @@ const MIME = {
   bmp: 'image/bmp', avif: 'image/avif', svg: 'image/svg+xml', ico: 'image/x-icon', tif: 'image/tiff', tiff: 'image/tiff',
   pbm: 'image/x-portable-bitmap', pgm: 'image/x-portable-graymap', ppm: 'image/x-portable-pixmap',
   pdf: 'application/pdf',
-  mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska', mov: 'video/quicktime', avi: 'video/x-msvideo', ogv: 'video/ogg',
+  mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska', mov: 'video/quicktime', avi: 'video/x-msvideo', ogv: 'video/ogg', flv: 'video/x-flv', ts: 'video/mp2t',
   mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', weba: 'audio/webm',
   txt: 'text/plain', md: 'text/markdown', html: 'text/html', htm: 'text/html', css: 'text/css', csv: 'text/csv', tsv: 'text/tab-separated-values',
   xml: 'application/xml', json: 'application/json', jsonl: 'application/x-ndjson', ndjson: 'application/x-ndjson',

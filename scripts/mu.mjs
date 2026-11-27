@@ -67,6 +67,8 @@ async function main() {
     ? { browser: 'firefox', executablePath: EXE.firefox, headless: true, protocolTimeout: timeout + 30000, extraPrefsFirefox: cpu ? { 'dom.webgpu.enabled': false } : {} }
     : { executablePath: EXE[which] || EXE.chrome, headless: true, protocolTimeout: timeout + 30000,
       args: ['--no-first-run', '--autoplay-policy=no-user-gesture-required', ...(cpu ? ['--disable-gpu'] : ['--enable-unsafe-webgpu', '--enable-gpu', '--ignore-gpu-blocklist', '--use-angle=d3d11'])] });
+  // hard stop: a spinning worker must not keep the process alive past the timeout
+  setTimeout(() => { console.error(`[harness] hard stop after ${timeout + 60000} ms`); try { browser.process()?.kill(); } catch { /* gone */ } process.exit(1); }, timeout + 60000).unref();
   let code = 0;
   try {
     const page = await browser.newPage();

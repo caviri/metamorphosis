@@ -225,7 +225,7 @@ register({
   async run({ input, frames, keyframes, audio, tier }, ctx) {
     const result = { outputs: [], notes: [] }; const add = async (path, role) => { const r = await fitImage(path, { tier, tag: 'claude' }); result.outputs.push({ ...r.output, role, tokens: r.tokens }); };
     try { result.probe = await M.run('video.probe', { input }); } catch (e) { result.notes.push(`probe failed: ${e.message}`); }
-    const sheet = await M.run('video.contactSheet', { input, frames }); await add(outs(sheet)[0].path, 'contact-sheet');
+    const sheet = await M.run('video.contactSheet', { input, count: frames }); await add(outs(sheet)[0].path, 'contact-sheet');
     if (keyframes) { const r = await M.run('video.frames', { input, count: keyframes }); for (const o of outs(r)) await add(o.path, 'frame'); }
     if (audio) {
       try { const a = await M.run('video.extractAudio', { input, format: 'wav' }); const s = await M.run('audio.spectrogram', { input: outs(a)[0].path }); await add(outs(s)[0].path, 'audio-spectrogram'); vfs.rm(outs(a)[0].path); } catch (e) { result.notes.push(`no audio spectrogram: ${e.message}`); }
