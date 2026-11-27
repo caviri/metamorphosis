@@ -194,8 +194,9 @@ register({
     const before = ops.vertexCount(res.fc);
     const features = res.fc.features.map((f) => {
       let g = ops.mapPos(f.geometry, rnd);
-      if (args.dedupe) g = ops.mapLines(g, (line, ring) => { const o = []; for (const c of line) { const p = o[o.length - 1]; if (!p || p[0] !== c[0] || p[1] !== c[1]) o.push(c); } return o.length >= (ring ? 4 : 2) ? o : line; });
-      return { ...f, geometry: g };
+      const masks = [];
+      if (args.dedupe) g = ops.mapLines(g, (line, ring) => { const o = [], keep = []; line.forEach((c, i) => { const p = o[o.length - 1]; if (!p || p[0] !== c[0] || p[1] !== c[1]) { o.push(c); keep.push(i); } }); const ok = o.length >= (ring ? 4 : 2); masks.push(ok ? keep : line.map((_, i) => i)); return ok ? o : line; });
+      return { ...f, geometry: g, properties: args.dedupe ? ops.syncCoordProps({ ...f, geometry: g }, masks) : f.properties };
     });
     const fc = { ...res.fc, features };
     const bytesBefore = JSON.stringify(res.fc).length;
@@ -421,9 +422,9 @@ register({
   async run(args) {
     const { ops } = await lib();
     const res = await load(args); const b = box(args.bbox);
-    const fc = ops.clip(res.fc, b);
+    const clipped = ops.clip(res.fc, b); const fc = { type: 'FeatureCollection', features: clipped.features };
     const out = await saveFC(fc, args, 'clip');
-    return { output: out.stat, bbox: b, featuresBefore: res.fc.features.length, featuresAfter: fc.features.length, verticesBefore: ops.vertexCount(res.fc), verticesAfter: ops.vertexCount(fc), geometryTypes: ops.typeCounts(fc), ...notesOf(res.notes, out.notes) };
+    return { output: out.stat, bbox: b, featuresBefore: res.fc.features.length, featuresAfter: fc.features.length, verticesBefore: ops.vertexCount(res.fc), verticesAfter: ops.vertexCount(fc), geometryTypes: ops.typeCounts(fc), ...notesOf(res.notes, out.notes, clipped.droppedCoordinateProperties ? [`per-vertex timestamps were removed from ${clipped.droppedCoordinateProperties} cut track(s): they no longer line up with the vertices`] : []) };
   },
 });
 

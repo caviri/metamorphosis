@@ -239,7 +239,7 @@ register({
       output, analysedAt: { width: w, height: h }, source: src, downscale: r2(scale, 4),
       algorithm: { x: pow2(w) ? 'radix-2' : 'bluestein', y: pow2(h) ? 'radix-2' : 'bluestein', padding: 'none' }, window: args.window ? 'hann' : 'none',
       meanLuma: r2(info.value[0]), highFrequencyEnergy: r2(info.value[1], 6), midHighFrequencyEnergy: r2(info.value[2], 6),
-      peaks, periodic: peaks.length > 0 && peaks[0].prominence > 20,
+      peaks, periodic: peaks.some((p) => p.prominence > 20 && p.magnitude > 0.005),
       note: 'peaks: frequency in cycles per analysed pixel; periodPx in original pixels; angleDeg is the direction of the wave vector (0 = pattern repeats horizontally, 90 = vertically); prominence = magnitude relative to the average at that radius (> 20 means a clear periodic component).',
       backend: 'wasm',
     };
@@ -369,7 +369,7 @@ register({
     properties: {
       input: IN,
       max: { type: 'integer', default: 20, minimum: 1, maximum: 200, description: 'Maximum number of lines' },
-      minVotes: { type: 'number', default: 0, minimum: 0, description: 'Minimum votes (edge pixels on the line); 0 = half of the strongest line' },
+      minVotes: { type: 'number', default: 0, minimum: 0, description: 'Minimum votes (edge pixels on the line); 0 = 30 % of the strongest line' },
       thetaSteps: { type: 'integer', default: 360, minimum: 45, maximum: 1440, description: 'Angular bins over 180° (360 → 0.5° resolution)' },
       sigma: { type: 'number', default: 1.4, minimum: 0, maximum: 10, description: 'Canny gaussian pre-blur' },
       low: { type: 'number', minimum: 0, maximum: 360, description: 'Canny low threshold (default automatic)' },

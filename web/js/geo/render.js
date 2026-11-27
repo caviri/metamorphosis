@@ -1,7 +1,7 @@
 // μεταμόρφωσις :: geo/render — draw a FeatureCollection as a map (canvas → PNG, or SVG) and elevation charts.
 // No tiles, no network: context comes from the vendored Natural Earth 110m basemap.
 import { RAD, DEG, haversine, wrapLon, MERC_MAX_LAT } from './geodesy.js';
-import { eachPart, unwrap, bboxOf, bboxSpan, centroidOf } from './ops.js';
+import { eachPart, eachPos, unwrap, bboxOf, centroidOf } from './ops.js';
 import { readTopo } from './formats.js';
 import { canvasOf } from '../img.js';
 
@@ -58,17 +58,17 @@ export function projection(kind, lon0 = 0, lat0 = 0) {
   }
   if (kind === 'orthographic' || kind === 'laea') {
     const ortho = kind === 'orthographic', p0 = lat0 * RAD, s0 = Math.sin(p0), c0 = Math.cos(p0), R = ortho ? 1 : 2;
+    // az(lon, lat) → [x, y, cos c]: direction from the centre (|x,y| = sin c) and cosine of the angular distance c
+    // (latitude kept a hair off the poles so a run of vertices at ±90 still fans out by longitude at the antipode)
+    const az = (l, p) => { const dl = (l - lon0) * RAD, ph = Math.max(-89.9999, Math.min(89.9999, p)) * RAD, cp = Math.cos(ph), sp = Math.sin(ph), cdl = Math.cos(dl); return [cp * Math.sin(dl), c0 * sp - s0 * cp * cdl, s0 * sp + c0 * cp * cdl]; };
+    // points beyond `farCos` (ortho: the far hemisphere; laea: the last sliver round the antipode) are parked on a circle of
+    // radius `farR` outside the map disc, keeping only their azimuth — see makePen.trace
+    const farCos = ortho ? 0 : -0.94, farR = ortho ? 1.6 : 2.04;
     const fwd = (l, p) => {
-      const dl = (l - lon0) * RAD, ph = p * RAD, cp = Math.cos(ph), sp = Math.sin(ph), cdl = Math.cos(dl);
-      const cosc = s0 * sp + c0 * cp * cdl; let x = cp * Math.sin(dl), y = c0 * sp - s0 * cp * cdl;
-      if (ortho) {
-        if (cosc >= 0) return [x, y];
-        // far side: push it outside the disc (continuous azimuthal extension) so paths stay connected and the disc clip hides it
-        const h = Math.hypot(x, y), r = 1 + (Math.acos(Math.max(-1, cosc)) - Math.PI / 2);
-        return h < 1e-12 ? [0, -r] : [x / h * r, y / h * r];
-      }
-      const k = Math.sqrt(2 / Math.max(1e-9, 1 + cosc)); if (1 + cosc < 1e-9) { const h = Math.hypot(x, y) || 1; return [x / h * 2, y / h * 2]; }
-      return [x * k, y * k];
+      const [x, y, cc] = az(l, p);
+      if (cc < farCos) { const h = Math.hypot(x, y); return h < 1e-12 ? [0, -farR] : [x / h * farR, y / h * farR]; }
+      if (ortho) return [x, y];
+      const k = Math.sqrt(2 / (1 + cc)); return [x * k, y * k];
     };
     const inv = (x, y) => {
       const rho = Math.hypot(x, y); if (rho > R + 1e-9) return null; if (rho < 1e-12) return [lon0, lat0];
@@ -76,7 +76,7 @@ export function projection(kind, lon0 = 0, lat0 = 0) {
       return [wrapLon(lon0 + Math.atan2(x * sc, rho * c0 * cc - y * s0 * sc) * DEG), Math.asin(Math.max(-1, Math.min(1, cc * s0 + y * sc * c0 / rho))) * DEG];
     };
     const hidden = ortho ? (l, p) => s0 * Math.sin(p * RAD) + c0 * Math.cos(p * RAD) * Math.cos((l - lon0) * RAD) < 0 : () => false;
-    return { kind, cyl: false, lon0, lat0, R, fwd, inv, hidden };
+    return { kind, cyl: false, lon0, lat0, R, fwd, inv, hidden, az, farCos, farR };
   }
   throw new Error(`unknown projection "${kind}" — accepted: ${PROJECTIONS.join(', ')}`);
 }
@@ -182,6 +182,18 @@ function planView(fc, o) {
     if (lon0 === undefined) { lon0 = global && !azi ? 0 : wrapLon((w + e) / 2); lat0 = (s + n) / 2; if (global && azi && e - w > 300) { lon0 = 0; lat0 = Math.abs(lat0) > 45 ? Math.sign(lat0) * 90 : 0; } }
   }
   if (lon0 === undefined) { lon0 = 0; lat0 = 0; }
+  // azimuthal views fit a cone around the data: centre = mean direction of the vertices, radius = farthest vertex
+  let cone = null;
+  if (azi && !o.bbox) {
+    if (o.center && o.span) cone = o.span / 2;
+    else if (!o.center && fc && bb.count) {
+      let sx = 0, sy = 0, sz = 0; const pts = []; const stride = Math.max(1, Math.floor(bb.count / 20000)); let i = 0;
+      for (const f of fc.features) eachPos(f.geometry, (c) => { if (i++ % stride) return; const l = c[0] * RAD, p = c[1] * RAD, cp = Math.cos(p); const q = [cp * Math.cos(l), cp * Math.sin(l), Math.sin(p)]; sx += q[0]; sy += q[1]; sz += q[2]; pts.push(q); });
+      const h = Math.hypot(sx, sy, sz);
+      if (h > 1e-6 * pts.length) { sx /= h; sy /= h; sz /= h; lon0 = Math.atan2(sy, sx) * DEG; lat0 = Math.asin(Math.max(-1, Math.min(1, sz))) * DEG; let mn = 1; for (const q of pts) mn = Math.min(mn, q[0] * sx + q[1] * sy + q[2] * sz); cone = Math.acos(Math.max(-1, mn)) * DEG; cone = bb.count === 1 || cone < 1e-7 ? 8 : Math.max(cone * 1.1, 0.001); }
+    }
+    if (cone !== null) global = cone >= (kind === 'orthographic' ? 80 : 150);
+  }
   const P = projection(kind, lon0, lat0);
   // world outline in plane coordinates
   let world; const outline = [];
@@ -191,15 +203,19 @@ function planView(fc, o) {
     world = [-Math.PI, -P.ymax, Math.PI, P.ymax]; if (kind === 'equalearth') { let mx = 0; for (const q of outline) mx = Math.max(mx, Math.abs(q[0])); world = [-mx, -P.ymax, mx, P.ymax]; }
   } else world = [-P.R, -P.R, P.R, P.R];
   let ext = world.slice();
-  if (!global && box) {
+  if (!global && cone !== null) { const rho = kind === 'orthographic' ? Math.sin(cone * RAD) : 2 * Math.sin(cone * RAD / 2); ext = [-rho, -rho, rho, rho]; } else if (!global && box) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; const [w, s, e, n] = box;
     const add = (l, p) => { if (!P.cyl && P.hidden(l, p)) return; const q = P.fwd(P.cyl ? lon0 + wrapRel(l - lon0) : l, p); if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; };
     for (let i = 0; i <= 24; i++) { const t = i / 24; add(w + (e - w) * t, s); add(w + (e - w) * t, n); add(w, s + (n - s) * t); add(e, s + (n - s) * t); }
-    if (P.cyl) { const a = P.fwd(lon0 - (e - w) / 2, s), b = P.fwd(lon0 + (e - w) / 2, n), a2 = P.fwd(lon0 - (e - w) / 2, n), b2 = P.fwd(lon0 + (e - w) / 2, s); x0 = Math.min(a[0], a2[0]); x1 = Math.max(b[0], b2[0]); y0 = Math.min(a[1], b2[1]); y1 = Math.max(b[1], a2[1]); }
     if (Number.isFinite(x0) && x1 > x0 && y1 > y0) ext = [Math.max(world[0], x0), Math.max(world[1], y0), Math.min(world[2], x1), Math.min(world[3], y1)];
   }
+  if (global && kind === 'mercator' && !o.bbox && !(o.center && o.span)) {
+    let lo = -62, hi = 84; if (bb.bbox) { lo = Math.max(-MERC_MAX_LAT, bb.bbox[1] - 10); hi = Math.min(MERC_MAX_LAT, bb.bbox[3] + 10); if (hi - lo < 60) { const mid = (lo + hi) / 2; lo = Math.max(-MERC_MAX_LAT, mid - 30); hi = Math.min(MERC_MAX_LAT, mid + 30); } }
+    ext[1] = P.fwd(lon0, lo)[1]; ext[3] = P.fwd(lon0, hi)[1]; world[1] = ext[1]; world[3] = ext[3];
+  }
   const legendW = o.legend ? 210 : 0;
-  const m = { l: 64, r: 18 + legendW, t: 40, b: 62 };
+  const fine = !global && box && Math.max(box[3] - box[1], 0) < 3 && cone === null;
+  const m = { l: fine ? 92 : 64, r: 18 + legendW, t: 40, b: 62 };
   const W = o.width; const availW = W - m.l - m.r;
   const ew = ext[2] - ext[0], eh = ext[3] - ext[1];
   let H = o.height; let availH;
@@ -219,6 +235,8 @@ function planView(fc, o) {
   if (la0 > la1) { la0 = -90; la1 = 90; r0 = -180; r1 = 180; }
   if (!P.cyl) { for (const pole of [90, -90]) { if (P.hidden(lon0, pole)) continue; const q = px(P.fwd(lon0, pole)); if (q[0] >= frame.x && q[0] <= frame.x + frame.w && q[1] >= frame.y && q[1] <= frame.y + frame.h) { r0 = -180; r1 = 180; if (pole > 0) la1 = 90; else la0 = -90; } } if (miss && global) { r0 = -180; r1 = 180; if (kind === 'laea') { la0 = -90; la1 = 90; } else { la0 = Math.max(-90, lat0 - 90); la1 = Math.min(90, lat0 + 90); } } }
   r0 = Math.max(-180, r0); r1 = Math.min(180, r1);
+  if (P.cyl && global && !(o.center && o.span) && !o.bbox) { r0 = -180; r1 = 180; }
+  if (r1 - r0 > 359.5) { r0 = -180; r1 = 180; }
   return { kind, P, lon0, lat0, W, H, m, frame, k, vis, world, outline, px, unpx, global, range: { lat: [la0, la1], rel: [r0, r1] }, dataBbox: bb.bbox, crosses: bb.crossesAntimeridian, legendW };
 }
 const wrapRel = (d) => { d = ((d + 180) % 360 + 360) % 360 - 180; return d; };
@@ -230,8 +248,20 @@ function makePen(g, v) {
   const fx0 = frame.x - 2, fx1 = frame.x + frame.w + 2, fy0 = frame.y - 2, fy1 = frame.y + frame.h + 2;
   // trace one continuous-longitude coordinate list; returns false if it never touches the frame
   const trace = (coords, off, close) => {
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity; const pts = new Array(coords.length);
-    for (let i = 0; i < coords.length; i++) { const q = px(P.fwd(coords[i][0] + off, coords[i][1])); pts[i] = q; if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity; let pts;
+    if (P.cyl) { pts = new Array(coords.length); for (let i = 0; i < coords.length; i++) pts[i] = px(P.fwd(coords[i][0] + off, coords[i][1])); } else {
+      // Azimuthal: a far-side run is replaced by an arc outside the map disc that sweeps the same azimuths, so the path keeps
+      // its topology (which way round the disc it goes) and no chord between far points can cut across the visible map.
+      pts = []; let far = false, pth = 0; const ortho = v.kind === 'orthographic';
+      for (let i = 0; i < coords.length; i++) {
+        const [x, y, cc] = P.az(coords[i][0], coords[i][1]);
+        if (cc >= P.farCos) { const k = ortho ? 1 : Math.sqrt(2 / (1 + cc)); pts.push(px([x * k, y * k])); far = false; continue; }
+        const th = Math.hypot(x, y) < 1e-12 ? pth : Math.atan2(y, x);
+        if (far) { let d = th - pth; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; const n = Math.max(1, Math.ceil(Math.abs(d) / 0.12)); for (let k = 1; k <= n; k++) { const a = pth + d * k / n; pts.push(px([P.farR * Math.cos(a), P.farR * Math.sin(a)])); } } else pts.push(px([P.farR * Math.cos(th), P.farR * Math.sin(th)]));
+        pth = th; far = true;
+      }
+    }
+    for (const q of pts) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }
     if (x1 < fx0 || x0 > fx1 || y1 < fy0 || y0 > fy1) return false;
     g.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
     if (close) g.closePath();
@@ -252,9 +282,26 @@ function makePen(g, v) {
     polygon(rings) {
       const rs = prepRings(rings, step); if (!rs.length) return false; let any = false;
       for (const off of offsets(rs[0])) for (const r of rs) any = trace(r, off, true) || any;
-      if (!P.cyl && any) { const anti = [wrapLon(lon0 + 180), -v.lat0]; if (prepContains(rs, anti)) { const c = px([0, 0]), R = (P.R + 2) * v.k; g.rect(c[0] - R, c[1] - R, 2 * R, 2 * R); } }
+      if (!P.cyl && any) { const anti = [wrapLon(lon0 + 180), -v.lat0]; if (Math.abs(anti[1]) < 89.999 && prepContains(rs, anti)) { const c = px([0, 0]), R = (P.R + 2) * v.k; g.rect(c[0] - R, c[1] - R, 2 * R, 2 * R); } }
       return any;
     },
+    /** add the outline of a polygon to the current path — rings as open lines, without seams along ±180° or a pole */
+    outline(rings) {
+      let any = false;
+      for (const ring of rings) {
+        let run = [];
+        for (let i = 0; i < ring.length; i++) {
+          const c = ring[i], b = ring[i - 1];
+          const seam = b && ((Math.abs(Math.abs(c[0]) - 180) < 1e-6 && Math.abs(c[0] - b[0]) < 1e-6) || (Math.abs(Math.abs(c[1]) - 90) < 1e-6 && Math.abs(c[1] - b[1]) < 1e-6));
+          if (seam) { if (run.length > 1) any = this.line(run) || any; run = []; }
+          run.push(c);
+        }
+        if (run.length > 1) any = this.line(run) || any;
+      }
+      return any;
+    },
+    /** trace a ready-made coordinate list as is (graticule) */
+    raw(coords) { return trace(coords, 0, false); },
     /** pixel position of a point, or null when hidden / outside the frame */
     point(c) {
       if (!P.cyl && P.hidden(c[0], c[1])) return null;
@@ -296,7 +343,7 @@ export function classify(fc, key, th, { classes = 5, method = 'quantile' } = {})
   }
   const freq = new Map(); for (const f of fc.features) { const v = (f.properties || {})[key]; if (v === null || v === undefined || v === '') continue; const s = String(v); freq.set(s, (freq.get(s) || 0) + 1); }
   const top = [...freq.entries()].sort((a, b) => b[1] - a[1]); const shown = top.slice(0, th.cat.length); const map = new Map(shown.map(([s], i) => [s, th.cat[i]]));
-  const legend = shown.map(([s, c], i) => ({ color: th.cat[i], label: s.length > 20 ? s.slice(0, 19) + '…' : s, count: c }));
+  const legend = shown.map(([s, c], i) => ({ color: th.cat[i], label: s.length > 17 ? s.slice(0, 16) + '…' : s, count: c }));
   const rest = top.slice(th.cat.length).reduce((a, b) => a + b[1], 0); if (rest) legend.push({ color: th.other, label: `other (${top.length - shown.length})`, count: rest });
   return { kind: 'categorical', key, categories: top.length, colorOf: (v) => (v === null || v === undefined || v === '' ? th.noData : map.get(String(v)) || th.other), legend, missing: fc.features.length - [...freq.values()].reduce((a, b) => a + b, 0) };
 }
@@ -328,10 +375,9 @@ export async function renderMap(fc, o = {}) {
   let base = null;
   if (o.basemap !== 'none') {
     base = await loadBasemap();
-    g.beginPath(); for (const f of base.land.features) eachPart(f.geometry, (k, c) => { if (k === 'polygon') pen.polygon(c); });
-    g.fillStyle = th.land; g.fill('evenodd');
-    if (o.basemap !== 'land') { g.beginPath(); for (const f of base.countries.features) eachPart(f.geometry, (k, c) => { if (k === 'polygon') pen.polygon(c); }); g.strokeStyle = th.border; g.lineWidth = 0.8; g.stroke(); }
-    g.beginPath(); for (const f of base.land.features) eachPart(f.geometry, (k, c) => { if (k === 'polygon') pen.polygon(c); });
+    g.fillStyle = th.land; for (const f of base.land.features) eachPart(f.geometry, (k, c) => { if (k !== 'polygon') return; g.beginPath(); if (pen.polygon(c)) g.fill('evenodd'); });
+    if (o.basemap !== 'land') { g.beginPath(); for (const f of base.countries.features) eachPart(f.geometry, (k, c) => { if (k === 'polygon') pen.outline(c); }); g.strokeStyle = th.border; g.lineWidth = 0.8; g.stroke(); }
+    g.beginPath(); for (const f of base.land.features) eachPart(f.geometry, (k, c) => { if (k === 'polygon') pen.outline(c); });
     g.strokeStyle = th.coast; g.lineWidth = 1.15; g.stroke();
   }
   // graticule
@@ -346,8 +392,8 @@ export async function renderMap(fc, o = {}) {
     for (let l = a0; l <= a1 + 1e-9; l += sLon) { const L = +l.toFixed(6); if (P.cyl && full && Math.abs(wrapRel(L - v.lon0)) > 180 - 1e-6) continue; meridians.push({ v: L, c: [[P.cyl ? v.lon0 + wrapRel(L - v.lon0) : L, Math.max(-capLat, lo)], [P.cyl ? v.lon0 + wrapRel(L - v.lon0) : L, Math.min(capLat, hi)]] }); }
     for (let p = Math.ceil(lo / sLat - 1e-9) * sLat; p <= hi + 1e-9; p += sLat) { const Pv = +p.toFixed(6); if (Math.abs(Pv) > capLat - 1e-9 || Math.abs(Pv) >= 90) continue; const w0 = full || !P.cyl ? v.lon0 - 180 : v.lon0 + v.range.rel[0] - sLon, w1 = full || !P.cyl ? v.lon0 + 180 : v.lon0 + v.range.rel[1] + sLon; const n = Math.max(2, Math.ceil((w1 - w0) / 2)); parallels.push({ v: Pv, c: Array.from({ length: n + 1 }, (_, i) => [w0 + (w1 - w0) * i / n, Pv]) }); }
     g.beginPath();
-    for (const mm of meridians) { const u = densify(mm.c, 2); const pts = u.map((c) => v.px(P.fwd(c[0], c[1]))); pts.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]))); }
-    for (const pp of parallels) { const pts = pp.c.map((c) => v.px(P.fwd(c[0], c[1]))); pts.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]))); }
+    for (const mm of meridians) pen.raw(densify(mm.c, 2));
+    for (const pp of parallels) pen.raw(pp.c);
     g.strokeStyle = th.grat; g.lineWidth = 1; g.stroke();
   }
   // data
@@ -360,8 +406,10 @@ export async function renderMap(fc, o = {}) {
     const lw = o.lineWidth || 2;
     const fillA = o.fillOpacity ?? (cls ? 0.85 : 0.22);
     for (const f of fc.features) { // polygons first
-      let has = false; g.beginPath(); eachPart(f.geometry, (k, c) => { if (k === 'polygon') { counts.polygons++; has = pen.polygon(c) || has; } });
-      if (has) { const c = col(f); g.fillStyle = hexA(c, fillA); g.fill('evenodd'); g.strokeStyle = cls ? th.ground : c; g.lineWidth = cls ? 0.8 : 1.4; g.stroke(); counts.drawn++; }
+      if (!f.geometry || !/Polygon|Collection/.test(f.geometry.type)) continue;
+      let has = false; const c = col(f); g.fillStyle = hexA(c, fillA);
+      eachPart(f.geometry, (k, rings) => { if (k !== 'polygon') return; counts.polygons++; g.beginPath(); if (pen.polygon(rings)) { g.fill('evenodd'); has = true; } });
+      if (has) { g.beginPath(); eachPart(f.geometry, (k, rings) => { if (k === 'polygon') pen.outline(rings); }); g.strokeStyle = cls ? th.ground : c; g.lineWidth = cls ? 0.8 : 1.4; g.stroke(); counts.drawn++; }
     }
     for (const f of fc.features) {
       let has = false; g.beginPath(); eachPart(f.geometry, (k, c) => { if (k === 'line') { counts.lines++; has = pen.line(c) || has; } });
@@ -379,40 +427,48 @@ export async function renderMap(fc, o = {}) {
       for (const f of fc.features) {
         const t = (f.properties || {})[o.label]; if (t === null || t === undefined || t === '' || !f.geometry) continue;
         let at = null, dx = 0, w = 0; const gt = f.geometry.type;
-        if (gt === 'Point') { at = f.geometry.coordinates; dx = pr + 4; w = 0; } else if (gt === 'LineString') { at = f.geometry.coordinates[Math.floor(f.geometry.coordinates.length / 2)]; dx = 5; } else { at = centroidOf(f.geometry); w = 1; }
-        const q = at && pen.point(at); if (q) labels.push({ s: String(t).length > 28 ? String(t).slice(0, 27) + '…' : String(t), x: q[0], y: q[1], dx, center: w === 1 });
+        if (gt === 'Point') { at = f.geometry.coordinates; dx = pr + 4; w = 0; } else if (gt === 'LineString') { at = f.geometry.coordinates[Math.floor(f.geometry.coordinates.length / 2)]; w = 2; } else if (gt === 'MultiLineString') { const longest = f.geometry.coordinates.slice().sort((a, b) => b.length - a.length)[0] || []; at = longest[Math.floor(longest.length / 2)]; w = 2; } else { at = centroidOf(f.geometry); w = 1; }
+        const q = at && pen.point(at); if (q) labels.push({ s: String(t).length > 28 ? String(t).slice(0, 27) + '…' : String(t), x: q[0], y: q[1], dx, mode: w });
       }
     }
   }
   // country names from the basemap (context for a vision model)
   const placed = [];
-  const tryPlace = (s, x, y, center, dx, color, size, bold) => {
-    g.font = font(size, bold); const tw = g.measureText(s).width; const bx = center ? x - tw / 2 : x + dx; const box = [bx - 2, y - size * 0.7, bx + tw + 2, y + size * 0.7];
-    if (box[0] < frame.x || box[2] > frame.x + frame.w || box[1] < frame.y || box[3] > frame.y + frame.h) return false;
-    if (placed.some((b) => box[0] < b[2] && b[0] < box[2] && box[1] < b[3] && b[1] < box[3])) return false;
-    placed.push(box); g.textAlign = 'left'; g.textBaseline = 'middle'; halo(g, th, s, bx, y, color); return true;
+  // mode 0: beside a point (right, left, above, below); 1: centred on it; 2: just above it (lines)
+  const tryPlace = (s, x, y, mode, dx, color, size, bold) => {
+    g.font = font(size, bold); const tw = g.measureText(s).width, hh = size * 0.7;
+    const spots = mode === 1 ? [[x - tw / 2, y]] : mode === 2 ? [[x - tw / 2, y - size], [x - tw / 2, y + size]] : [[x + dx, y], [x - dx - tw, y], [x - tw / 2, y - dx - hh], [x - tw / 2, y + dx + hh]];
+    for (const [bx, by] of spots) {
+      const box = [bx - 2, by - hh, bx + tw + 2, by + hh];
+      if (box[0] < frame.x || box[2] > frame.x + frame.w || box[1] < frame.y || box[3] > frame.y + frame.h) continue;
+      if (placed.some((b) => box[0] < b[2] && b[0] < box[2] && box[1] < b[3] && b[1] < box[3])) continue;
+      placed.push(box); g.textAlign = 'left'; g.textBaseline = 'middle'; halo(g, th, s, bx, by, color); return true;
+    }
+    return false;
   };
+  g.restore(); // leave the outline clip: text may overhang a curved map edge, but stays inside the frame
   let nLabels = 0, skippedLabels = 0;
-  for (const L of labels.slice(0, 5000)) { if (nLabels >= (o.maxLabels ?? 80)) { skippedLabels++; continue; } if (tryPlace(L.s, L.x, L.y, L.center, L.dx, th.text, fs, false)) nLabels++; else skippedLabels++; }
+  for (const L of labels.slice(0, 5000)) { if (nLabels >= (o.maxLabels ?? 80)) { skippedLabels++; continue; } if (tryPlace(L.s, L.x, L.y, L.mode, L.dx, th.text, fs, false)) nLabels++; else skippedLabels++; }
   if (o.countryLabels && base) {
     const cands = [];
     for (const f of base.countries.features) { const nm = f.properties && f.properties.name; if (!nm) continue; let best = null, ba = 0; eachPart(f.geometry, (k, c) => { if (k !== 'polygon') return; let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9; for (const p of unwrap(c[0])) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); } const a = (x1 - x0) * (y1 - y0); if (a > ba) { ba = a; best = c; } }); if (!best) continue; const cen = centroidOf({ type: 'Polygon', coordinates: best }); const q = cen && pen.point(cen); if (q) cands.push({ nm, q, a: ba }); }
     cands.sort((a, b) => b.a - a.a);
-    for (const c of cands) tryPlace(c.nm, c.q[0], c.q[1], true, 0, th.dim, Math.max(10, fs - 2), false);
+    for (const c of cands) tryPlace(c.nm, c.q[0], c.q[1], 1, 0, th.dim, Math.max(10, fs - 2), false);
   }
   // in-map graticule labels for azimuthal views
   if (o.graticule !== false && !P.cyl) {
     g.font = font(Math.max(10, fs - 2)); g.textBaseline = 'middle';
     const refLat = Math.max(-80, Math.min(80, Math.round(((v.range.lat[0] + v.range.lat[1]) / 2) / sLat) * sLat));
-    for (const pp of parallels) { if (pp.v === refLat) continue; const q = pen.point([v.lon0, pp.v]); if (!q) continue; g.textAlign = 'left'; halo(g, th, fmtLat(pp.v, sLat), q[0] + 4, q[1] - 7, th.dim); }
-    for (const mm of meridians) { const q = pen.point([mm.v, refLat]); if (!q) continue; g.textAlign = 'center'; halo(g, th, fmtLon(mm.v, sLon), q[0], q[1] + 9, th.dim); }
+    const fits = (x, tw) => x >= frame.x + 2 && x + tw <= frame.x + frame.w - 2; g.textAlign = 'left';
+    const free = (x, y, tw) => { const b = [x - 2, y - 7, x + tw + 2, y + 7]; if (placed.some((q) => b[0] < q[2] && q[0] < b[2] && b[1] < q[3] && q[1] < b[3])) return false; placed.push(b); return true; };
+    for (const pp of parallels) { if (pp.v === refLat) continue; const q = pen.point([v.lon0, pp.v]); if (!q) continue; const s = fmtLat(pp.v, sLat); const tw = g.measureText(s).width; if (fits(q[0] + 4, tw) && q[1] - 7 > frame.y + 6 && free(q[0] + 4, q[1] - 7, tw)) halo(g, th, s, q[0] + 4, q[1] - 7, th.dim); }
+    for (const mm of meridians) { const q = pen.point([mm.v, refLat]); if (!q) continue; const s = fmtLon(mm.v, sLon), tw = g.measureText(s).width; if (fits(q[0] - tw / 2, tw) && q[1] + 9 < frame.y + frame.h - 6 && free(q[0] - tw / 2, q[1] + 9, tw)) halo(g, th, s, q[0] - tw / 2, q[1] + 9, th.dim); }
   }
-  g.restore();
   // frame / limb
   g.restore();
   g.save(); g.beginPath(); g.rect(frame.x - 1, frame.y - 1, frame.w + 2, frame.h + 2); g.clip();
   outlinePath(g, v); g.strokeStyle = th.frame; g.lineWidth = 1.2; g.stroke(); g.restore();
-  if (P.cyl) { g.strokeStyle = th.frame; g.lineWidth = 1; if (v.kind !== 'equalearth' || !v.global) g.strokeRect(frame.x + 0.5, frame.y + 0.5, frame.w - 1, frame.h - 1); }
+  if (P.cyl ? v.kind !== 'equalearth' || !v.global : !v.global) { g.strokeStyle = th.frame; g.lineWidth = 1; g.strokeRect(frame.x + 0.5, frame.y + 0.5, frame.w - 1, frame.h - 1); }
 
   // ── margin tick labels (cylindrical) ──
   if (o.graticule !== false && P.cyl) {
@@ -461,12 +517,13 @@ export async function renderMap(fc, o = {}) {
     g.textAlign = 'left'; g.font = font(fs, true); g.fillStyle = th.text; g.fillText(cls.key.length > 20 ? cls.key.slice(0, 19) + '…' : cls.key, lx, ly + 6); ly += 26;
     g.font = font(fs - 1);
     const rows = cls.legend.slice(); if (cls.missing) rows.push({ color: th.noData, label: 'no data', count: cls.missing });
-    for (const r of rows) { g.fillStyle = r.color; g.fillRect(lx, ly, sw, sw); g.strokeStyle = th.dim; g.lineWidth = 0.6; g.strokeRect(lx + 0.5, ly + 0.5, sw - 1, sw - 1); g.fillStyle = th.text; g.fillText(r.label, lx + sw + 8, ly + sw / 2); g.fillStyle = th.dim; g.textAlign = 'right'; g.fillText(`n=${r.count}`, W - 14, ly + sw / 2 + (g.measureText(r.label).width > v.legendW - sw - 70 ? 14 : 0)); g.textAlign = 'left'; ly += g.measureText(r.label).width > v.legendW - sw - 70 ? 36 : 24; }
+    const fa = o.fillOpacity ?? 0.85, blend = fc && fc.features.some((f) => f.geometry && /Polygon/.test(f.geometry.type));
+    for (const r of rows) { if (blend) { g.fillStyle = o.basemap === 'none' ? th.ocean : th.land; g.fillRect(lx, ly, sw, sw); g.fillStyle = hexA(r.color, fa); } else g.fillStyle = r.color; g.fillRect(lx, ly, sw, sw); g.strokeStyle = th.dim; g.lineWidth = 0.6; g.strokeRect(lx + 0.5, ly + 0.5, sw - 1, sw - 1); g.fillStyle = th.text; g.fillText(r.label, lx + sw + 8, ly + sw / 2); g.fillStyle = th.dim; g.textAlign = 'right'; g.fillText(`n=${r.count}`, W - 14, ly + sw / 2 + (g.measureText(r.label).width > v.legendW - sw - 70 ? 14 : 0)); g.textAlign = 'left'; ly += g.measureText(r.label).width > v.legendW - sw - 70 ? 36 : 24; }
     g.fillStyle = th.dim; g.fillText(cls.kind === 'sequential' ? `${cls.method} classes` : `${cls.categories} categories`, lx, ly + 10);
     info.legend = { property: cls.key, kind: cls.kind, method: cls.method, min: cls.min, max: cls.max, breaks: cls.breaks, classes: cls.legend.map((r) => ({ label: r.label, color: r.color, count: r.count })), missing: cls.missing };
   }
   const ll = (x, y) => { const p = v.unpx(x, y); return p ? [+wrapLon(p[0]).toFixed(5), +p[1].toFixed(5)] : null; };
-  info.visible = { latRange: v.range.lat.map((x) => +x.toFixed(4)), lonRange: [+wrapLon(v.lon0 + v.range.rel[0]).toFixed(4), +wrapLon(v.lon0 + v.range.rel[1]).toFixed(4)], wholeWorld: v.global, corners: { topLeft: ll(frame.x, frame.y), bottomRight: ll(frame.x + frame.w, frame.y + frame.h) } };
+  info.visible = { latRange: v.range.lat.map((x) => +x.toFixed(4)), lonRange: lonSpan >= 359.9 ? [-180, 180] : [+wrapLon(v.lon0 + v.range.rel[0]).toFixed(4), +wrapLon(v.lon0 + v.range.rel[1]).toFixed(4)], wholeWorld: v.global, corners: { topLeft: ll(frame.x, frame.y), bottomRight: ll(frame.x + frame.w, frame.y + frame.h) } };
   info.graticule = o.graticule !== false ? { lonStep: sLon, latStep: sLat } : null;
   info.drawn = { ...counts, labels: nLabels, labelsSkipped: skippedLabels };
   info.dataCrossesAntimeridian = !!v.crosses;

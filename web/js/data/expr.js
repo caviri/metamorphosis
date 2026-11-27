@@ -252,8 +252,8 @@ function makeAgg(spec, resolve, n) {
     if (fn === 'min' || fn === 'max') { if (!vals.length) return null; return vals.reduce((a, b) => { const c = compare(b, a); return (fn === 'min' ? c < 0 : c > 0) ? b : a; }); }
     const nums = vals.map(num).filter((v) => !Number.isNaN(v)); if (!nums.length) return fn === 'sum' ? 0 : null;
     const sum = nums.reduce((a, b) => a + b, 0);
-    if (fn === 'sum') return Number(sum.toPrecision(15));
-    if (fn === 'avg' || fn === 'mean') return Number((sum / nums.length).toPrecision(15));
+    if (fn === 'sum') return Number(sum.toPrecision(12));
+    if (fn === 'avg' || fn === 'mean') return Number((sum / nums.length).toPrecision(12));
     if (fn === 'median') { nums.sort((a, b) => a - b); const h = nums.length >> 1; return nums.length % 2 ? nums[h] : (nums[h - 1] + nums[h]) / 2; }
     const mean = sum / nums.length; return nums.length > 1 ? Math.sqrt(nums.reduce((a, b) => a + (b - mean) ** 2, 0) / (nums.length - 1)) : null;
   };

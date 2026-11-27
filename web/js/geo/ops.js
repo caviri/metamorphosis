@@ -130,6 +130,11 @@ export function centroidOf(g) {
     else if (k === 'line') { if (c.length === 1) add(1, c[0], 1e-9); for (let i = 1; i < c.length; i++) { const u = unwrap([c[i - 1], c[i]]); add(1, [(u[0][0] + u[1][0]) / 2, (u[0][1] + u[1][1]) / 2], Math.max(1e-9, haversine(c[i - 1], c[i]))); } }
     else if (c.length && c[0].length >= 3) {
       // planar centroid of the unwrapped ring set (outer minus holes), weighted by geodesic area
+      const u0 = unwrap(c[0]);
+      if (Math.abs(u0[u0.length - 1][0] - u0[0][0]) > 180) { // the ring circles a pole: no planar centroid, use the mean direction of its vertices
+        const m = [0, 0, 0]; for (const q of c[0]) { const t = toVec(q); m[0] += t[0]; m[1] += t[1]; m[2] += t[2]; }
+        add(2, fromVec(m), Math.max(1e-9, polygonArea(c))); return;
+      }
       let A = 0, cx = 0, cy = 0;
       c.forEach((ring, ri) => {
         const r = unwrap(ring); if (r.length < 3) return;
@@ -225,8 +230,24 @@ export function simplify(fc, { method = 'dp', tolerance, target }) {
     }
   }
   let pi = 0, after = fixed;
-  const features = fc.features.map((f) => ({ ...f, geometry: mapLines(f.geometry, (line) => { const w = parts[pi++]; const out = []; for (let i = 0; i < line.length; i++) if (w[i] === Infinity || (w[i] >= thr && w[i] > 0) || (thr === 0 && w[i] >= 0)) out.push(line[i]); after += out.length; return out; }) }));
+  const features = fc.features.map((f) => {
+    const masks = [];
+    const geometry = mapLines(f.geometry, (line) => { const w = parts[pi++]; const out = [], keep = []; for (let i = 0; i < line.length; i++) if (w[i] === Infinity || (w[i] >= thr && w[i] > 0) || (thr === 0 && w[i] >= 0)) { out.push(line[i]); keep.push(i); } after += out.length; masks.push(keep); return out; });
+    return { ...f, geometry, properties: syncCoordProps(f, masks) };
+  });
   return { fc: { ...fc, features }, before, after, tolerance: thr === Infinity ? null : thr };
+}
+
+/** per-vertex arrays in properties.coordinateProperties (GPX times…) follow the vertices that survive: masks = kept indices per line */
+export function syncCoordProps(f, masks) {
+  const cp = f.properties && f.properties.coordinateProperties; const g = f.geometry;
+  if (!cp || !g || (g.type !== 'LineString' && g.type !== 'MultiLineString')) return f.properties;
+  const out = {};
+  for (const [k, v] of Object.entries(cp)) {
+    if (!Array.isArray(v)) { out[k] = v; continue; }
+    out[k] = g.type === 'LineString' ? masks[0].map((i) => v[i] ?? null) : v.map((seg, n) => (Array.isArray(seg) && masks[n] ? masks[n].map((i) => seg[i] ?? null) : seg));
+  }
+  return { ...f.properties, coordinateProperties: out };
 }
 
 // ───────────────────────────────────────────────────────────── clip ──
@@ -278,7 +299,7 @@ function clipGeom(g, b) {
 /** clip every feature to bbox [w,s,e,n]; a bbox with west > east crosses the antimeridian and is clipped as two boxes */
 export function clip(fc, b) {
   const boxes = b[0] <= b[2] ? [b] : [[b[0], b[1], 180, b[3]], [-180, b[1], b[2], b[3]]];
-  const features = [];
+  const features = []; let dropped = 0;
   for (const f of fc.features) {
     const gs = boxes.map((bx) => clipGeom(f.geometry, bx)).filter(Boolean);
     if (!gs.length) continue;
@@ -289,9 +310,11 @@ export function clip(fc, b) {
       else if (gs.every((x) => /Polygon$/.test(x.type))) g = { type: 'MultiPolygon', coordinates: gs.flatMap((x) => (x.type === 'Polygon' ? [x.coordinates] : x.coordinates)) };
       else g = { type: 'GeometryCollection', geometries: gs };
     }
-    features.push({ ...f, geometry: g });
+    let properties = f.properties;
+    if (properties && properties.coordinateProperties && geomVertices(g) !== geomVertices(f.geometry)) { properties = { ...properties }; delete properties.coordinateProperties; dropped++; }
+    features.push({ ...f, properties, geometry: g });
   }
-  return { ...fc, features };
+  return { ...fc, features, droppedCoordinateProperties: dropped };
 }
 
 // ───────────────────────────────────────────────────────────── hull ──

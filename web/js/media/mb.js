@@ -5,7 +5,12 @@ const V = (p) => new URL(`../../vendor/mediabunny/${p}`, import.meta.url).href;
 let libP = null;
 /** the Mediabunny module namespace (cached). Also exposed as globalThis.Mediabunny for the encoder extensions. */
 export function mb() {
-  libP ||= import(V('mediabunny.min.mjs')).then((lib) => { globalThis.Mediabunny ||= lib; return lib; }).catch((e) => { libP = null; throw new Error(`Mediabunny failed to load: ${e.message}`); });
+  libP ||= import(V('mediabunny.min.mjs')).then((lib) => {
+    // The encoder extensions (IIFE builds) look for a global `Mediabunny`. Give them a copy whose registerEncoder counts
+    // encoder start-ups, so tools can tell "re-encoded with a WASM encoder" from "packets copied".
+    globalThis.Mediabunny ||= { ...lib, registerEncoder: (cls) => lib.registerEncoder(class extends cls { init(...a) { wasmUse.n++; return super.init(...a); } }) };
+    return lib;
+  }).catch((e) => { libP = null; throw new Error(`Mediabunny failed to load: ${e.message}`); });
   return libP;
 }
 export const hasWebCodecs = () => typeof VideoDecoder !== 'undefined' && typeof VideoEncoder !== 'undefined' && typeof AudioEncoder !== 'undefined';
@@ -13,11 +18,18 @@ export const hasWebCodecs = () => typeof VideoDecoder !== 'undefined' && typeof 
 // WASM audio encoders for what WebCodecs usually lacks (MP3: LAME, FLAC: libFLAC, AAC: libavcodec). ~0.3–1.1 MB each, on demand.
 const EXT = { mp3: ['mediabunny-mp3-encoder.min.js', 'MediabunnyMp3Encoder', 'registerMp3Encoder'], flac: ['mediabunny-flac-encoder.min.js', 'MediabunnyFlacEncoder', 'registerFlacEncoder'], aac: ['mediabunny-aac-encoder.min.js', 'MediabunnyAacEncoder', 'registerAacEncoder'] };
 const extP = {}; const wasmEncoders = new Set();
-/** make sure `codec` (mediabunny audio codec name) can be encoded; → 'webcodecs' | 'wasm' | null (cannot) */
-export async function ensureAudioEncoder(codec) {
+/** n = how many times a bundled WASM audio encoder has been started */
+export const wasmUse = { n: 0 };
+/**
+ * Make sure `codec` (Mediabunny audio codec name) can be encoded, optionally with a concrete {numberOfChannels, sampleRate, bitrate}
+ * (browser encoders are picky: Chrome's AAC only takes 96/128/160/192 kbit/s). Loads the WASM encoder when the browser cannot.
+ * → 'webcodecs' | 'wasm' | null (cannot)
+ */
+export async function ensureAudioEncoder(codec, opts) {
   const lib = await mb();
-  if (wasmEncoders.has(codec)) return 'wasm';
-  if (await lib.canEncodeAudio(codec).catch(() => false)) return 'webcodecs';
+  const can = () => lib.canEncodeAudio(codec, opts).catch(() => false);
+  if (wasmEncoders.has(codec)) return (await can()) ? 'wasm' : null;
+  if (await can()) return 'webcodecs';
   if (!EXT[codec]) return null;
   extP[codec] ||= (async () => {
     const [file, global, fn] = EXT[codec];
@@ -26,7 +38,7 @@ export async function ensureAudioEncoder(codec) {
     wasmEncoders.add(codec);
   })().catch((e) => { delete extP[codec]; throw new Error(`could not load the WASM ${codec} encoder: ${e.message}`); });
   await extP[codec];
-  return 'wasm';
+  return (await can()) ? 'wasm' : null;
 }
 export const audioEncoderKind = (codec) => (wasmEncoders.has(codec) ? 'wasm' : 'webcodecs');
 

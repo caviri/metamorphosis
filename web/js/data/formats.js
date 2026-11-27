@@ -111,7 +111,8 @@ export function gridToTable(grid, { header = 'auto', infer = true } = {}) {
   let hasHeader = header === true || header === 'true';
   if (header === 'auto' || header === undefined) {
     const f = grid[0] || [];
-    hasHeader = grid.length > 0 && f.length === ncol && f.every((v) => typeof v === 'string' && v.trim() !== '' && !isNumText(v.trim())) && new Set(f).size === f.length;
+    const named = f.filter((v) => v !== null && v !== undefined && v !== '');
+    hasHeader = grid.length > 0 && named.length >= Math.max(1, Math.ceil(ncol / 2)) && named.every((v) => typeof v === 'string' && v.trim() !== '' && !isNumText(v.trim())) && new Set(named).size === named.length;
   }
   const columns = uniqueNames(hasHeader ? Array.from({ length: ncol }, (_, i) => grid[0][i]) : Array.from({ length: ncol }, () => null));
   const rows = (hasHeader ? grid.slice(1) : grid).map((r) => { const o = new Array(ncol).fill(null); for (let i = 0; i < r.length; i++) o[i] = r[i] === undefined ? null : r[i]; return o; });
@@ -153,10 +154,10 @@ export function normalise(v) {
     return s.replace(/T00:00:00\.000Z$/, '').replace(/\.000Z$/, 'Z');
   }
   if (Array.isArray(v)) return v.map(normalise);
-  if (v instanceof Map) { const o = {}; for (const [k, x] of v) o[String(k)] = normalise(x); return o; }
+  if (v instanceof Map) return Object.fromEntries([...v].map(([k, x]) => [String(k), normalise(x)]));
   if (v instanceof Set) return [...v].map(normalise);
   if (ArrayBuffer.isView(v)) return Array.from(v);
-  if (typeof v === 'object') { const o = {}; for (const k of Object.keys(v)) o[k] = normalise(v[k]); return o; }
+  if (typeof v === 'object') return Object.fromEntries(Object.keys(v).map((k) => [k, normalise(v[k])]));
   return v;
 }
 
@@ -197,11 +198,11 @@ export function valueToTable(value, opts = {}) {
   return { columns: ['value'], rows: value.map((v) => [v]), root, shape: 'values' };
 }
 
-export const tableToObjects = (t) => t.rows.map((r) => { const o = {}; for (let i = 0; i < t.columns.length; i++) o[t.columns[i]] = r[i] === undefined ? null : r[i]; return o; });
+export const tableToObjects = (t) => t.rows.map((r) => Object.fromEntries(t.columns.map((c, i) => [c, r[i] === undefined ? null : r[i]])));
 
 export function sortKeysDeep(v) {
   if (Array.isArray(v)) return v.map(sortKeysDeep);
-  if (isObj(v)) { const o = {}; for (const k of Object.keys(v).sort()) o[k] = sortKeysDeep(v[k]); return o; }
+  if (isObj(v)) return Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeysDeep(v[k])]));
   return v;
 }
 
@@ -374,7 +375,7 @@ export function parseHtmlTable(text, opts = {}) {
     const cells = [...tr.children].filter((c) => c.tagName === 'TD' || c.tagName === 'TH');
     if (i === 0 && cells.length && cells.every((c) => c.tagName === 'TH')) headerRow = true;
     const out = [];
-    for (const c of cells) { const t = c.textContent.replace(/\s+/g, ' ').trim(); const span = Math.min(1000, Number(c.getAttribute('colspan')) || 1); out.push(t === '' ? null : t); for (let k = 1; k < span; k++) out.push(null); }
+    for (const c of cells) { for (const br of c.querySelectorAll('br')) br.replaceWith('\n'); const t = c.textContent.replace(/[^\S\n]+/g, ' ').replace(/ ?\n ?/g, '\n').trim(); const span = Math.min(1000, Number(c.getAttribute('colspan')) || 1); out.push(t === '' ? null : t); for (let k = 1; k < span; k++) out.push(null); }
     return out;
   }).filter((r) => r.length);
   const t = gridToTable(grid, { header: opts.header !== undefined && opts.header !== 'auto' ? opts.header : (headerRow ? true : 'auto'), infer: opts.infer !== false });
@@ -425,7 +426,7 @@ export async function loadDoc(path, opts = {}) {
   }
   if (format === 'toml') {
     const t = await libToml();
-    const conv = (v) => (v instanceof Date ? (Number.isNaN(v.getTime()) ? null : v.toISOString()) : Array.isArray(v) ? v.map(conv) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).map((k) => [k, conv(v[k])])) : v);
+    const conv = (v) => (v instanceof Date ? (Number.isNaN(v.getTime()) ? null : v.toISOString().replace(/\.000(?=Z|[+-]|$)/, '')) : Array.isArray(v) ? v.map(conv) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).map((k) => [k, conv(v[k])])) : v);
     try { return { format, value: normalise(conv(t.parse(decodeText(bytes)))) }; } catch (e) { throw new Error(`toml: ${String(e.message).split('\n').slice(0, 6).join(' ').replace(/\s+/g, ' ').slice(0, 300)}`); }
   }
   if (format === 'xml') return { format, value: xmlDocToJs(parseXML(decodeText(bytes))) };
@@ -457,7 +458,7 @@ export async function loadTable(path, opts = {}) {
 /** strip nulls (TOML has no null); returns count dropped */
 function dropNulls(v, counter) {
   if (Array.isArray(v)) return v.filter((x) => (x === null || x === undefined ? (counter.n++, false) : true)).map((x) => dropNulls(x, counter));
-  if (isObj(v)) { const o = {}; for (const k of Object.keys(v)) { if (v[k] === null || v[k] === undefined) counter.n++; else o[k] = dropNulls(v[k], counter); } return o; }
+  if (isObj(v)) return Object.fromEntries(Object.keys(v).filter((k) => (v[k] === null || v[k] === undefined ? (counter.n++, false) : true)).map((k) => [k, dropNulls(v[k], counter)]));
   return v;
 }
 

@@ -14,7 +14,7 @@ export function decodeText(bytes, hint) {
   if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return new TextDecoder('utf-8').decode(bytes.subarray(3));
   if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes.subarray(2));
   if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes.subarray(2));
-  if (hint) { try { return new TextDecoder(hint).decode(bytes); } catch { /* unknown label → fall through */ } }
+  if (hint) { try { return new TextDecoder(hint).decode(bytes); } catch { /* unknown label \u2192 fall through */ } }
   try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return new TextDecoder('windows-1252').decode(bytes); }
 }
 export function decodeHtmlBytes(bytes) {
@@ -50,7 +50,7 @@ export async function openZip(bytes) {
   return z;
 }
 export function parseXml(text, label = 'xml') {
-  const d = new DOMParser().parseFromString(text.replace(/^﻿/, ''), 'application/xml');
+  const d = new DOMParser().parseFromString(text.replace(/^\ufeff/, ''), 'application/xml');
   if (d.getElementsByTagName('parsererror').length) throw new Error(`malformed XML in ${label}`);
   return d;
 }
@@ -79,7 +79,7 @@ const OTHER = {
   csv: ['data.convert', 'tabular data is handled by the data.* family'], tsv: ['data.convert', 'tabular data is handled by the data.* family'], json: ['data.convert', 'structured data is handled by the data.* family'], jsonl: ['data.convert', 'structured data is handled by the data.* family'], ndjson: ['data.convert', 'structured data is handled by the data.* family'],
   yaml: ['data.convert', 'structured data is handled by the data.* family'], yml: ['data.convert', 'structured data is handled by the data.* family'], toml: ['data.convert', 'structured data is handled by the data.* family'], xml: ['data.convert', 'generic XML is handled by the data.* family'],
   zip: ['data.unzip', 'plain zip archives are handled by the data.* family'], image: ['vision.ocr', 'images need OCR (vision.* / image.* families)'], audio: ['audio.transcribe', 'audio needs transcription (audio.* family)'], video: ['video.info', 'video is handled by the video.* family'],
-  legacy: [null, 'legacy binary Office files (.doc/.ppt/.xls, OLE2) are not supported in the browser — re-save as .docx/.pptx/.xlsx'],
+  legacy: [null, 'legacy binary Office files (.doc/.ppt/.xls, OLE2) are not supported in the browser \u2014 re-save as .docx/.pptx/.xlsx'],
 };
 export const SUPPORTED = 'docx, pptx, odt, odp, epub, html, ipynb, rtf, eml, mbox, md, txt, srt, vtt';
 function hint(kind) {
@@ -87,9 +87,9 @@ function hint(kind) {
   const domain = tool ? tool.split('.')[0] : null;
   const present = tool && M.tools.has(tool);
   const alt = !present && domain ? [...M.tools.keys()].filter((n) => n.startsWith(domain + '.')).slice(0, 12) : [];
-  return { tool: present ? tool : null, note: `${why}${tool ? (present ? ` — use ${tool}` : alt.length ? ` — ${tool} is not registered here; ${domain}.* tools available: ${alt.join(', ')}` : ` — no ${domain}.* tools are loaded in this page`) : ''}` };
+  return { tool: present ? tool : null, note: `${why}${tool ? (present ? ` \u2014 use ${tool}` : alt.length ? ` \u2014 ${tool} is not registered here; ${domain}.* tools available: ${alt.join(', ')}` : ` \u2014 no ${domain}.* tools are loaded in this page`) : ''}` };
 }
-/** → {type, family:'doc'|'other', zip?, text?, bytes, suggest?} — type is one of SUPPORTED or a foreign kind (pdf, xlsx, …) */
+/** \u2192 {type, family:'doc'|'other', zip?, text?, bytes, suggest?} \u2014 type is one of SUPPORTED or a foreign kind (pdf, xlsx, \u2026) */
 export async function sniff(path) {
   const bytes = vfs.read(path); const ext = vfs.extOf(path);
   const out = { type: 'unknown', family: 'other', bytes, ext };
@@ -123,7 +123,7 @@ export async function sniff(path) {
   if (nul > n / 100 && !utf16) { out.type = 'binary'; return out; }
   const doc = (t) => { out.type = t; out.family = 'doc'; return out; };
   const text = ext === 'html' || ext === 'htm' || ext === 'xhtml' ? decodeHtmlBytes(bytes) : decodeText(bytes); out.text = text;
-  const head = text.slice(0, 3000).replace(/^﻿/, '');
+  const head = text.slice(0, 3000).replace(/^\ufeff/, '');
   if (TEXT_EXT[ext] && !['text', 'markdown'].includes(TEXT_EXT[ext])) return doc(TEXT_EXT[ext]);
   if ((ext === 'json' || !ext) && /^\s*\{/.test(head) && /"cells"\s*:/.test(text.slice(0, 200000)) && /"nbformat"\s*:/.test(text)) return doc('ipynb');
   if (OTHER[ext] && !['image', 'audio', 'video', 'legacy'].includes(ext)) return other(ext);
@@ -145,13 +145,13 @@ const relPath = (fromFile, toFile) => {
   while (i < a.length && i < b.length - 1 && a[i] === b[i]) i++;
   return [...Array(a.length - i).fill('..'), ...b.slice(i)].map((s) => (s === '..' ? s : encodeURIComponent(s).replace(/%2F/gi, '/'))).join('/');
 };
-const safeName = (n) => (n || 'file').replace(/^.*[\\/]/, '').replace(/[^\w.\-()+ ]+/g, '_').replace(/^\.+/, '').slice(0, 120) || 'file';
+const safeName = (n) => (n || 'file').replace(/^.*[\\/]/, '').replace(/[^\p{L}\p{N}_.\-()+ ]+/gu, '_').replace(/^\.+/, '').slice(0, 120) || 'file';
 export function makeSink(mdPath, dir, dry = false) {
   dir = (dir || `${mdPath.replace(/\.[A-Za-z0-9]+$/, '')}_media`).replace(/\/+$/, '');
   const used = new Set(); const byKey = new Map(); const outputs = [];
   return {
     dir, outputs,
-    /** write once per key; → relative link from the markdown file */
+    /** write once per key; \u2192 relative link from the markdown file */
     async put(name, bytes, mime, key) {
       if (key && byKey.has(key)) return byKey.get(key);
       name = safeName(name); if (!vfs.extOf(name) && mime) name += '.' + extFor(mime);
@@ -166,7 +166,7 @@ export function makeSink(mdPath, dir, dry = false) {
   };
 }
 const parseDataUri = (src) => { const m = /^data:([^;,]*)((?:;[^;,]*)*),(.*)$/s.exec(src); if (!m) return null; try { const b64 = /;base64/i.test(m[2]); const bytes = b64 ? M.b64.dec(m[3]) : new TextEncoder().encode(decodeURIComponent(m[3])); return { bytes, mime: m[1] || 'application/octet-stream' }; } catch { return null; } };
-/** Apply the images policy to a DOM: extract | inline | alt | drop. resolve(src) → {bytes, mime, name, key}|null for container-internal images. */
+/** Apply the images policy to a DOM: extract | inline | alt | drop. resolve(src) \u2192 {bytes, mime, name, key}|null for container-internal images. */
 async function applyImages(root, c, resolve) {
   let n = 0;
   await H.rewriteImages(root, async (src) => {
@@ -183,7 +183,7 @@ async function applyImages(root, c, resolve) {
 // ─────────────────────────────────────────────────── inline markdown ──
 export const escMd = (s) => s.replace(/([\\`*_[\]<])/g, '\\$1');
 const escLine = (s) => s.replace(/^(\s*)(#{1,6}\s|[-+>]\s|\d+[.)]\s)/, (m, sp, x) => `${sp}\\${x}`);
-/** runs: [{text, bold, italic, strike, code, href, br}] → markdown, merging equal neighbours and keeping spaces outside markers */
+/** runs: [{text, bold, italic, strike, code, href, br}] \u2192 markdown, merging equal neighbours and keeping spaces outside markers */
 export function runsToMd(runs) {
   const merged = [];
   for (const r of runs) {
@@ -208,12 +208,12 @@ const cellMd = (s) => s.replace(/\s*\n\s*/g, '<br>').trim();
 const tableMd = (rows) => { const width = Math.max(0, ...rows.map((r) => r.length)); if (!width) return ''; const grid = rows.map((r) => { const g = r.map(cellMd); while (g.length < width) g.push(''); return g; }); return H.gridToMarkdown(grid, width); };
 
 // ───────────────────────────────────────────────────────── OOXML meta ──
-function ooxmlMeta(zip) {
+export function ooxmlMeta(zip) {
   const meta = {};
   const core = zip.xml('docProps/core.xml');
   if (core) { const g = (n) => desc(core, n)[0]?.textContent.trim() || undefined; Object.assign(meta, { title: g('title'), author: g('creator'), subject: g('subject'), keywords: g('keywords'), description: g('description'), lastModifiedBy: g('lastModifiedBy'), created: g('created'), modified: g('modified'), revision: g('revision') }); }
   const app = zip.xml('docProps/app.xml');
-  if (app) { const g = (n) => desc(app, n)[0]?.textContent.trim() || undefined; const num = (n) => { const v = parseInt(g(n) || '', 10); return Number.isFinite(v) ? v : undefined; }; Object.assign(meta, { application: g('Application'), pages: num('Pages'), words: num('Words'), characters: num('Characters'), slides: num('Slides'), notes: num('Notes'), company: g('Company') }); }
+  if (app) { const g = (n) => desc(app, n)[0]?.textContent.trim() || undefined; const num = (n) => { const v = parseInt(g(n) || '', 10); return Number.isFinite(v) ? v : undefined; }; Object.assign(meta, { application: g('Application'), pagesStored: num('Pages'), company: g('Company') }); }
   for (const k of Object.keys(meta)) if (meta[k] === undefined || meta[k] === '') delete meta[k];
   return meta;
 }
@@ -224,7 +224,7 @@ const DOCX_STYLE_MAP = [
   ...['Source Code', 'Code', 'Code Block', 'HTML Preformatted', 'Preformatted Text', 'macro'].map((s) => `p[style-name='${s}'] => pre:separator('\\n')`),
   ...['Verbatim Char', 'Source Text', 'Code Char', 'HTML Code', 'Inline Code', 'Source Code Char'].map((s) => `r[style-name='${s}'] => code`),
   ...['Quote', 'Intense Quote', 'Block Text', 'Block Quote', 'Quotations'].map((s) => `p[style-name='${s}'] => blockquote > p:fresh`),
-  'strike => del',
+  "p[style-name='Horizontal Line'] => hr", 'strike => del',
 ];
 export async function docxToHtml(bytes, { images = true } = {}) {
   const mammoth = await mammothLib();
@@ -240,7 +240,7 @@ export async function docxToHtml(bytes, { images = true } = {}) {
   };
   const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   let res;
-  try { res = await mammoth.convertToHtml({ arrayBuffer: ab }, options); } catch (e) { throw new Error(`docx could not be read (${e.message || e}) — is the file a valid, unencrypted .docx?`); }
+  try { res = await mammoth.convertToHtml({ arrayBuffer: ab }, options); } catch (e) { throw new Error(`docx could not be read (${e.message || e}) \u2014 is the file a valid, unencrypted .docx?`); }
   const warnings = [...new Set(res.messages.map((m) => m.message))].slice(0, 20);
   return { html: res.value, store, warnings };
 }
@@ -326,7 +326,7 @@ async function pptxShapes(tree, rels, c, zip, slideNo, out) {
       } else {
         const uri = desc(el, 'graphicData')[0]?.getAttribute('uri') || ''; const kind = /chart/.test(uri) ? 'chart' : /diagram/.test(uri) ? 'SmartArt diagram' : /ole/.test(uri) ? 'embedded object' : 'graphic';
         const name = desc(kid(el, 'nvGraphicFramePr'), 'cNvPr')[0]?.getAttribute('name') || '';
-        out.blocks.push(`*[${kind}${name ? `: ${escMd(name)}` : ''} — not converted]*`); c.warn(`slide ${slideNo}: ${kind} not converted`);
+        out.blocks.push(`*[${kind}${name ? `: ${escMd(name)}` : ''} \u2014 not converted]*`); c.warn(`slide ${slideNo}: ${kind} not converted`);
       }
     }
   }
@@ -513,12 +513,20 @@ export async function htmlToMd(text, c) {
   const base = H.effectiveBase(doc, c.baseUrl);
   const title = (doc.querySelector('meta[property="og:title"]')?.getAttribute('content') || doc.title || '').replace(/\s+/g, ' ').trim() || null;
   H.cleanDom(doc.body); H.fixLazyImages(doc.body);
+  // "permalink" anchors wrapped around or placed inside headings are noise in Markdown
+  for (const a of doc.body.querySelectorAll('h1 a[href^="#"], h2 a[href^="#"], h3 a[href^="#"], h4 a[href^="#"], h5 a[href^="#"], h6 a[href^="#"]')) { if (/^[#\u00b6\u00a7\ud83d\udd17\s]*$/u.test(a.textContent)) a.remove(); else a.replaceWith(...a.childNodes); }
+  const norm = (t) => (t || '').replace(/\s+/g, ' ').trim();
+  const h1s = [...doc.body.querySelectorAll('h1')].map((h) => norm(h.textContent)).filter(Boolean);
   let root = doc.body; let main = null;
   if (c.mainContentOnly) { const r = H.pickMain(doc); root = r.el; main = r.info; }
   const rewritten = H.absolutize(root, base);
   await applyImages(root, c, null);
   let md = await H.domToMarkdown(root, c);
-  if (c.mainContentOnly && title && !root.querySelector('h1')) { md = `# ${escMd(title)}\n\n${md}`; main.titleAdded = true; }
+  if (c.mainContentOnly && !root.querySelector('h1')) {
+    // the page's own H1 often sits outside the article container: put the title back unless a heading already says it
+    const want = h1s.length === 1 ? h1s[0] : title; const have = [...root.querySelectorAll('h2, h3')].map((h) => norm(h.textContent).toLowerCase());
+    if (want && !have.some((h) => h && (h === want.toLowerCase() || want.toLowerCase().startsWith(h)))) { md = `# ${escMd(want)}\n\n${md}`; main.titleAdded = want; }
+  }
   const meta = { lang: doc.documentElement.getAttribute('lang') || undefined, description: doc.querySelector('meta[name="description"]')?.getAttribute('content') || undefined, urlsRewritten: base ? rewritten : undefined, baseUrl: base || undefined };
   for (const k of Object.keys(meta)) if (meta[k] === undefined) delete meta[k];
   return { markdown: md, title: title || root.querySelector('h1')?.textContent.replace(/\s+/g, ' ').trim() || null, meta, mainContent: main };
@@ -533,7 +541,7 @@ async function ipynbToMd(s, c) {
   if (!Array.isArray(cells)) throw new Error('notebook has no "cells" array (nbformat 3/4 expected)');
   const lang = nb.metadata?.language_info?.name || nb.metadata?.kernelspec?.language || (nb.metadata?.kernelspec?.name || '').replace(/\d+$/, '') || '';
   const parts = []; const count = { markdown: 0, code: 0, raw: 0, outputs: 0, images: 0 }; const cap = c.maxOutputChars;
-  const clip = (t) => { t = stripAnsi(t).replace(/\s+$/, ''); if (cap && t.length > cap) { c.warn(`an output was cut to ${cap} characters (raise maxOutputChars to keep more)`); return `${t.slice(0, cap)}\n… [output truncated: ${t.length - cap} more characters]`; } return t; };
+  const clip = (t) => { t = stripAnsi(t).replace(/\s+$/, ''); if (cap && t.length > cap) { c.warn(`an output was cut to ${cap} characters (raise maxOutputChars to keep more)`); return `${t.slice(0, cap)}\n\u2026 [output truncated: ${t.length - cap} more characters]`; } return t; };
   const fence = (t, l = '') => { let f = '```'; while (t.includes(f)) f += '`'; return `${f}${l}\n${t}\n${f}`; };
   const image = async (b64OrText, mime, name) => {
     count.images++;
@@ -580,7 +588,7 @@ async function ipynbToMd(s, c) {
 // ────────────────────────────────────────────────────────────── rtf ──
 const RTF_SKIP = new Set(['fonttbl', 'colortbl', 'pict', 'object', 'objdata', 'header', 'headerl', 'headerr', 'headerf', 'footer', 'footerl', 'footerr', 'footerf', 'themedata', 'colorschememapping', 'datastore', 'latentstyles', 'generator', 'listtable', 'listoverridetable', 'rsidtbl', 'xmlnstbl', 'mmathPr', 'pgdsctbl', 'revtbl', 'filetbl', 'operator', 'creatim', 'revtim', 'printim', 'buptim', 'company', 'manager', 'category', 'keywords', 'comment', 'doccomm', 'hlinkbase', 'nonshppict', 'bkmkstart', 'bkmkend', 'template', 'passwordhash', 'userprops', 'xe', 'tc', 'annotation', 'atnid', 'atnauthor', 'atrfstart', 'atrfend', 'falt', 'panose', 'fname', 'wgrffmtfilter', 'shpinst', 'sp', 'sn', 'sv', 'pnseclvl', 'listpicture', 'ftnsep', 'ftnsepc', 'aftnsep', 'aftnsepc']);
 const RTF_CP = { 932: 'shift_jis', 936: 'gbk', 949: 'euc-kr', 950: 'big5', 10000: 'macintosh', 65001: 'utf-8', 437: 'ibm866', 850: 'windows-1252' };
-const RTF_SYM = { tab: '\t', emdash: '—', endash: '–', bullet: '•', lquote: '‘', rquote: '’', ldblquote: '“', rdblquote: '”', emspace: ' ', enspace: ' ', qmspace: ' ', '~': ' ', _: '-' };
+const RTF_SYM = { tab: '\t', emdash: '\u2014', endash: '\u2013', bullet: '\u2022', lquote: '\u2018', rquote: '\u2019', ldblquote: '\u201c', rdblquote: '\u201d', emspace: ' ', enspace: ' ', qmspace: ' ', '~': '\u00a0', _: '-' };
 export function rtfToMd(bytes, c = {}) {
   const src = binStr(bytes); const n = src.length; let i = 0;
   let decoder = new TextDecoder('windows-1252'); const meta = {}; const styles = new Map();
@@ -602,7 +610,7 @@ export function rtfToMd(bytes, c = {}) {
     if (para.intbl) { if (runs.length) runs.push({ br: true }); return ''; } // cell text is collected by \cell
     const md = runsToMd(runs); runs = [];
     flushTable();
-    if (md) blocks.push(para.level ? `${'#'.repeat(Math.min(6, para.level))} ${md.replace(/\s*\n\s*/g, ' ')}` : para.list ? `- ${md.replace(/^(?:[•·o*-]|\d+[.)])\s+/, '')}` : escLine(md));
+    if (md) blocks.push(para.level ? `${'#'.repeat(Math.min(6, para.level))} ${md.replace(/\s*\n\s*/g, ' ').replace(/^\*\*(.*)\*\*$/, '$1')}` : para.list ? `- ${md.replace(/^(?:[\u2022\u00b7o*-]|\d+[.)])\s+/, '')}` : escLine(md));
     para.list = false;
     return md;
   };
@@ -706,7 +714,7 @@ function parseHeaders(block) {
   const map = new Map(); const order = [];
   for (const line of block.replace(/\r?\n[ \t]+/g, ' ').split(/\r?\n/)) {
     const m = /^([^\s:]+):\s?(.*)$/.exec(line); if (!m) continue;
-    let v = m[2]; if (/[\u0080-ÿ]/.test(v)) { try { v = new TextDecoder('utf-8', { fatal: true }).decode(binBytes(v)); } catch { /* keep latin1 */ } }
+    let v = m[2]; if (/[\u0080-\u00ff]/.test(v)) { try { v = new TextDecoder('utf-8', { fatal: true }).decode(binBytes(v)); } catch { /* keep latin1 */ } }
     v = decodeWords(v).trim(); const k = m[1].toLowerCase();
     if (!map.has(k)) map.set(k, v); order.push([m[1], v]);
   }
@@ -803,7 +811,7 @@ export function unsupported(s, path, toolName) {
   return new Error(`${toolName} cannot convert "${path}" (detected: ${s.type}${s.type === 'binary' ? ' data of unknown format' : ''}). Accepted: ${SUPPORTED}. For PDF use pdf.*, for spreadsheets/CSV/JSON use data.*.`);
 }
 /**
- * convert(path, opts) → {type, markdown, title, meta, warnings, outputs (extracted files), mainContent?}
+ * convert(path, opts) \u2192 {type, markdown, title, meta, warnings, outputs (extracted files), mainContent?}
  * opts: {mdPath, images, imagesDir, tables, headingOffset, timestamps, notes, mainContentOnly, baseUrl, maxOutputChars, attachments, emailBody, maxMessages, dry, type}
  */
 export async function convert(path, opts = {}, ctx) {
@@ -832,8 +840,8 @@ export async function convert(path, opts = {}, ctx) {
     case 'rtf': r = rtfToMd(s.bytes, c); break;
     case 'eml': case 'mbox': r = await emailToMd(s, c); break;
     case 'srt': case 'vtt': { const p = S.parseSubs(s.text ?? decodeText(s.bytes)); if (!p.cues.length) throw new Error(`no subtitle cues found in "${path}" (expected SRT or WebVTT timing lines like 00:00:01,000 --> 00:00:04,000)`); r = { markdown: S.toTranscript(p.cues, { timestamps: c.timestamps, markdown: true }), title: null, meta: { cues: p.cues.length, durationSeconds: +(p.cues[p.cues.length - 1].end / 1000).toFixed(3), skippedBlocks: p.skipped } }; break; }
-    case 'markdown': r = { markdown: (s.text ?? decodeText(s.bytes)).replace(/^﻿/, '').replace(/\r\n?/g, '\n'), title: null, meta: {} }; r.title = (/^#\s+(.+)$/m.exec(r.markdown) || [])[1] || null; break;
-    case 'text': r = { markdown: (s.text ?? decodeText(s.bytes)).replace(/^﻿/, '').replace(/\r\n?/g, '\n'), title: null, meta: { note: 'plain text passed through unchanged (no Markdown escaping applied)' } }; break;
+    case 'markdown': r = { markdown: (s.text ?? decodeText(s.bytes)).replace(/^\ufeff/, '').replace(/\r\n?/g, '\n'), title: null, meta: {} }; r.title = (/^#\s+(.+)$/m.exec(r.markdown) || [])[1] || null; break;
+    case 'text': r = { markdown: (s.text ?? decodeText(s.bytes)).replace(/^\ufeff/, '').replace(/\r\n?/g, '\n'), title: null, meta: { note: 'plain text passed through unchanged (no Markdown escaping applied)' } }; break;
     default: throw unsupported(s, path, opts.tool || 'doc.toMarkdown');
   }
   let md = r.markdown.replace(/\n{3,}/g, '\n\n');

@@ -57,7 +57,7 @@ function yAxis(g, plot, yt, label) {
 function xAxisNumeric(g, plot, xt, label, fmt) {
   g.font = THEME.font(12); g.textBaseline = 'top'; g.textAlign = 'center';
   const map = (v) => plot.x + ((v - xt.lo) / (xt.hi - xt.lo)) * plot.w;
-  for (const t of xt.ticks) { const x = Math.round(map(t)) + 0.5; g.strokeStyle = THEME.grid; g.lineWidth = 1; g.beginPath(); g.moveTo(x, plot.y); g.lineTo(x, plot.y + plot.h); g.stroke(); g.fillStyle = THEME.dim; g.fillText(fmt ? fmt(t) : fmtNum(t, xt.step), x, plot.y + plot.h + 8); }
+  for (const t of xt.ticks) { const x = Math.round(map(t)) + 0.5; g.strokeStyle = THEME.grid; g.lineWidth = 1; g.beginPath(); g.moveTo(x, plot.y); g.lineTo(x, plot.y + plot.h); g.stroke(); g.fillStyle = THEME.dim; const lab = fmt ? fmt(t) : fmtNum(t, xt.step); const half = g.measureText(lab).width / 2; const W = g.canvas.width; g.fillText(lab, Math.max(half + 4, Math.min(W - half - 4, x)), plot.y + plot.h + 8); }
   g.strokeStyle = THEME.axis; g.beginPath(); g.moveTo(plot.x, plot.y + plot.h + 0.5); g.lineTo(plot.x + plot.w, plot.y + plot.h + 0.5); g.stroke();
   if (label) { g.fillStyle = THEME.dim; g.textAlign = 'center'; g.fillText(clip(g, label, plot.w), plot.x + plot.w / 2, plot.y + plot.h + 28); }
   return map;
@@ -114,7 +114,7 @@ export function xyChart({ kind, x, series, title, subtitle, xLabel, yLabel, widt
   } else {
     const [xlo, xhi] = extent([x.values], false);
     let xt;
-    if (x.kind === 'time') { const span = xhi - xlo || 864e5; const n = Math.max(2, Math.floor(plot.w / 130)); const ticks = Array.from({ length: n + 1 }, (_, i) => xlo + (span * i) / n); xt = { ticks, lo: xlo, hi: xlo + span, step: span / n }; mx = xAxisNumeric(g, plot, xt, xLabel, (t) => fmtTime(t, span)); } else { const xp = (xhi - xlo) * 0.02; xt = niceTicks(xlo - xp, xhi + xp, Math.max(3, Math.floor(plot.w / 110))); mx = xAxisNumeric(g, plot, xt, xLabel); }
+    if (x.kind === 'time') { const span = xhi - xlo || 864e5; const n = Math.max(2, Math.floor(plot.w / 130)); const ticks = Array.from({ length: n + 1 }, (_, i) => xlo + (span * i) / n); xt = { ticks, lo: xlo - span * 0.015, hi: xlo + span * 1.015, step: span / n }; mx = xAxisNumeric(g, plot, xt, xLabel, (t) => fmtTime(t, span)); } else { const xp = (xhi - xlo) * 0.02; xt = niceTicks(xlo - xp, xhi + xp, Math.max(3, Math.floor(plot.w / 110))); mx = xAxisNumeric(g, plot, xt, xLabel); }
     const base = mx; mx = (i) => base(x.values[i]);
   }
   g.save(); g.beginPath(); g.rect(plot.x - 6, plot.y - 6, plot.w + 12, plot.h + 12); g.clip();
@@ -151,8 +151,8 @@ export function histChart({ edges, counts, title, subtitle, xLabel, yLabel = 'co
 }
 
 /** entropy strip: one bar per block, height and brightness = entropy (0..8 bits/byte), dashed line at the 7.5 "compressed/encrypted" level */
-export function entropyStrip({ blocks, blockSize, total, title, width = 1024, height = 240 }) {
-  const { c, g, top } = frame(width, height, { title, subtitle: `Shannon entropy per ${blockSize}-byte block · bits/byte · dashed line = 7.5 (compressed or encrypted above it)` });
+export function entropyStrip({ blocks, blockSize, total, title, threshold = 7.5, width = 1024, height = 240 }) {
+  const { c, g, top } = frame(width, height, { title, subtitle: `Shannon entropy per ${blockSize}-byte block · bits/byte · dashed line = ${threshold.toFixed(2)}: compressed or encrypted above it` });
   const yt = { ticks: [0, 2, 4, 6, 8], lo: 0, hi: 8, step: 2 };
   const plot = { x: 48, y: top, w: width - 48 - 20, h: height - top - 36 };
   const my = yAxis(g, plot, yt, null);
@@ -163,7 +163,7 @@ export function entropyStrip({ blocks, blockSize, total, title, width = 1024, he
     const i0 = Math.floor(px / bw); const i1 = Math.max(i0 + 1, Math.floor((px + 1) / bw)); let m = 0; for (let i = i0; i < i1 && i < n; i++) if (blocks[i] > m) m = blocks[i];
     const y = my(m); g.fillStyle = ramp(m / 8); g.fillRect(plot.x + px, y, 1, plot.y + plot.h - y);
   }
-  g.setLineDash([6, 4]); g.strokeStyle = THEME.dim; g.lineWidth = 1; const ty = Math.round(my(7.5)) + 0.5; g.beginPath(); g.moveTo(plot.x, ty); g.lineTo(plot.x + plot.w, ty); g.stroke(); g.setLineDash([]);
+  const ty = Math.round(my(threshold)) + 0.5; g.strokeStyle = THEME.bg; g.lineWidth = 3; g.beginPath(); g.moveTo(plot.x, ty); g.lineTo(plot.x + plot.w, ty); g.stroke(); g.setLineDash([6, 4]); g.strokeStyle = THEME.ink; g.lineWidth = 1; g.beginPath(); g.moveTo(plot.x, ty); g.lineTo(plot.x + plot.w, ty); g.stroke(); g.setLineDash([]);
   g.font = THEME.font(12); g.textBaseline = 'top'; g.fillStyle = THEME.dim;
   for (let k = 0; k <= 4; k++) { const off = Math.round((total * k) / 4); const x = plot.x + (plot.w * k) / 4; g.textAlign = k === 0 ? 'left' : k === 4 ? 'right' : 'center'; g.fillText(`0x${off.toString(16)}`, x, plot.y + plot.h + 8); g.strokeStyle = THEME.axis; g.beginPath(); g.moveTo(Math.round(x) + 0.5, plot.y + plot.h); g.lineTo(Math.round(x) + 0.5, plot.y + plot.h + 5); g.stroke(); }
   return c;
@@ -175,12 +175,12 @@ export function byteHistChart({ counts, title, log = false, width = 1024, height
   const max = Math.max(1, ...counts); const f = (v) => (log ? Math.log10(v + 1) : v); const top_ = f(max);
   const yt = log ? { ticks: Array.from({ length: Math.ceil(top_) + 1 }, (_, i) => i), lo: 0, hi: Math.max(1, Math.ceil(top_)), step: 1 } : niceTicks(0, max, 5);
   g.font = THEME.font(12); const lw = Math.max(...yt.ticks.map((t) => g.measureText(log ? fmtNum(10 ** t) : fmtNum(t, yt.step)).width));
-  const plot = { x: 16 + lw + 12, y: top, w: 0, h: height - top - 40 }; plot.w = Math.floor((width - plot.x - 20) / 256) * 256;
+  const plot = { x: 16 + lw + 12, y: top, w: 0, h: height - top - 40 }; plot.w = width - plot.x - 20;
   const map = (v) => plot.y + plot.h - ((v - yt.lo) / (yt.hi - yt.lo)) * plot.h;
   g.textBaseline = 'middle'; g.textAlign = 'right';
   for (const t of yt.ticks) { const y = Math.round(map(t)) + 0.5; g.strokeStyle = t === 0 ? THEME.axis : THEME.grid; g.beginPath(); g.moveTo(plot.x, y); g.lineTo(plot.x + plot.w, y); g.stroke(); g.fillStyle = THEME.dim; g.fillText(log ? (t === 0 ? '0' : fmtNum(10 ** t)) : fmtNum(t, yt.step), plot.x - 8, y); }
   const bw = plot.w / 256; g.fillStyle = THEME.series[0];
-  for (let i = 0; i < 256; i++) { if (!counts[i]) continue; const y = map(f(counts[i])); g.fillRect(plot.x + i * bw, Math.min(y, plot.y + plot.h - 1), Math.max(1, bw - (bw >= 3 ? 1 : 0)), Math.max(1, plot.y + plot.h - y)); }
+  for (let i = 0; i < 256; i++) { if (!counts[i]) continue; const y = map(f(counts[i])); const x0 = Math.round(plot.x + i * bw); const x1 = Math.round(plot.x + (i + 1) * bw); g.fillRect(x0, Math.min(y, plot.y + plot.h - 1), Math.max(1, x1 - x0 - (bw >= 3 ? 1 : 0)), Math.max(1, plot.y + plot.h - y)); }
   g.textBaseline = 'top'; g.fillStyle = THEME.dim;
   for (const v of [0, 0x20, 0x40, 0x60, 0x80, 0xa0, 0xc0, 0xe0, 0xff]) { const x = plot.x + (v + 0.5) * bw; g.textAlign = 'center'; g.fillText(`0x${v.toString(16).padStart(2, '0').toUpperCase()}`, x, plot.y + plot.h + 8); g.strokeStyle = THEME.axis; g.beginPath(); g.moveTo(Math.round(x) + 0.5, plot.y + plot.h); g.lineTo(Math.round(x) + 0.5, plot.y + plot.h + 5); g.stroke(); }
   return c;

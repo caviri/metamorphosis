@@ -745,7 +745,7 @@ pub unsafe extern "C" fn corners(s: *const u8, w: u32, h: u32, method: u32, sigm
 
 /// Standard Hough transform for straight lines on a Canny edge map of the image.
 /// Line model: rho = x·cos(theta) + y·sin(theta), theta in [0, π) with `theta_steps` bins, rho resolution 1 px.
-/// A peak must have ≥ `min_votes` votes (≤ 0 → half of the strongest peak) and be the maximum in a ±nms_rho × ±nms_theta window
+/// A peak must have ≥ `min_votes` votes (≤ 0 → 30 % of the strongest peak) and be the maximum in a ±nms_rho × ±nms_theta window
 /// (theta wraps with rho negated). out: f32[max·7] = rho, theta(rad), votes, x1, y1, x2, y2 where (x1,y1)-(x2,y2) is the longest
 /// run of edge pixels supporting the line (gaps ≤ max_gap px). edges_out (nullable): RGBA edge map. info: f32[4] = canny low,
 /// canny high, edge pixel count, strongest vote count. Returns the number of lines.
@@ -793,7 +793,7 @@ pub unsafe extern "C" fn hough(s: *const u8, w: u32, h: u32, sigma: f32, low: f3
     if peak == 0 {
         return 0;
     }
-    let thr = if min_votes <= 0.0 { (peak as f32 * 0.5).max(2.0) } else { min_votes } as u32;
+    let thr = if min_votes <= 0.0 { (peak as f32 * 0.3).max(2.0) } else { min_votes } as u32;
     let (wr, wt) = (nms_rho as isize, nms_theta as isize);
     let at = |t: isize, r: isize| -> u32 {
         // theta wraps by π, which mirrors rho

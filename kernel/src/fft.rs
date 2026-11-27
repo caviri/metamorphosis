@@ -123,7 +123,8 @@ impl Plan {
 /// 2-D FFT of Rec.709 luma. Writes the centred (DC at (w/2, h/2)) log-magnitude spectrum log(1+|F|), scaled so the maximum is 255,
 /// as gray RGBA into d. window != 0 applies a separable Hann window first (suppresses the edge-discontinuity cross).
 /// peaks: f32[max_peaks·4] = fx, fy (cycles/pixel, in the upper half-plane or fx>0 on the axis), |F|/|F(0)|, prominence
-/// (|F| divided by the mean magnitude of its radial frequency band) — strongest prominence first; local maxima only.
+/// (|F| divided by the mean magnitude of its radial frequency band). Local maxima only; those with prominence ≥ 8 come
+/// first ordered by magnitude, the rest follow by prominence.
 /// info: f64[4] = |F(0)| / (w·h) (mean luma after windowing), fraction of non-DC spectral energy above 0.25 cycles/pixel,
 /// fraction above 0.125 cycles/pixel, max log-magnitude. Returns the number of peaks written.
 #[no_mangle]
@@ -255,13 +256,18 @@ pub unsafe extern "C" fn fft2(s: *const u8, w: u32, h: u32, d: *mut u8, window: 
             let mean = if bcnt[b] > 0 { bsum[b] / bcnt[b] as f64 } else { 0.0 };
             let prom = if mean > 0.0 { m / mean } else { 0.0 };
             best.push((prom as f32, fx as f32, fy as f32, if dc > 0.0 { (m / dc) as f32 } else { 0.0 }));
-            if best.len() > 4096 {
+            if best.len() > 8192 {
                 best.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
-                best.truncate(mp.max(64));
+                best.truncate(mp.max(1024));
             }
         }
     }
-    best.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
+    // final order: peaks that clearly stand out of their band (prominence ≥ 8) first, strongest magnitude first;
+    // then the remaining local maxima by prominence
+    best.sort_by(|a, b| {
+        let (sa, sb) = (a.0 >= 8.0, b.0 >= 8.0);
+        sb.cmp(&sa).then(if sa && sb { b.3.partial_cmp(&a.3) } else { b.0.partial_cmp(&a.0) }.unwrap_or(core::cmp::Ordering::Equal))
+    });
     best.truncate(mp);
     for (i, p) in best.iter().enumerate() {
         peaks[i * 4] = p.1;

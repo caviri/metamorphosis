@@ -20,7 +20,7 @@ export function parseXhtml(text) {
   return doc;
 }
 
-const JUNK = 'script, style, noscript, template, link, meta, head > *, object, embed, applet, canvas, dialog, select, button, input, textarea';
+const JUNK = 'script, style, noscript, template, link, meta, head > *, object, embed, applet, canvas, dialog, select, button, input:not([type=checkbox]), textarea';
 export function cleanDom(root, { keepFrames = false } = {}) {
   for (const el of root.querySelectorAll(JUNK + (keepFrames ? '' : ', iframe, frame'))) el.remove();
   const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_COMMENT); const comments = []; while (walker.nextNode()) comments.push(walker.currentNode); for (const c of comments) c.remove();
@@ -51,7 +51,7 @@ export function absolutize(root, base) {
   for (const el of root.querySelectorAll('video[poster]')) fix(el, 'poster');
   return n;
 }
-/** fn(src, img) → new src string, or null to drop the image, or {alt:true} to keep only its alt text. */
+/** fn(src, img) \u2192 new src string, or null to drop the image, or {alt:true} to keep only its alt text. */
 export async function rewriteImages(root, fn) {
   for (const img of [...root.querySelectorAll('img, image')]) {
     const src = img.getAttribute('src') || img.getAttribute('xlink:href') || img.getAttribute('href') || '';
@@ -61,14 +61,14 @@ export async function rewriteImages(root, fn) {
 }
 
 // ─────────────────────────────────────────────── main-content extraction ──
-const NEG = /(?:^|[-_\s])(nav|navbar|navigation|navbox|menu|sidebar|side-bar|footer|masthead|comments?|disqus|share|sharing|social|related|recommended|promo|advert|advertisement|ads?|sponsor|sponsored|cookies?|consent|banner|breadcrumbs?|popup|modal|newsletter|subscribe|signup|toolbar|pagination|pager|skip|skip-link|toc|outbrain|taboola|widget|noprint|catlinks|editsection|mw-editsection|mw-jump-link|printfooter|sr-only|visually-hidden|screen-reader-text|hidden)(?:[-_\s]|$)/i;
+const NEG = /(?:^|[-_\s])(nav|navbar|navigation|navbox|menu|sidebar|side-bar|footer|masthead|comments?|disqus|share|sharing|social|related|recommended|promo|advert|advertisement|ads?|sponsor|sponsored|cookies?|consent|banner|breadcrumbs?|popup|modal|newsletter|subscribe|signup|toolbar|pagination|pager|skip|skip-link|toc|outbrain|taboola|widget|noprint|catlinks|editsection|mw-editsection|mw-jump-link|printfooter|sr-only|visually-hidden|screen-reader-text|hidden|ambox|metadata|vector-body-before-content)(?:[-_\s]|$)/i;
 const POS = /(?:^|[-_\s])(article|body|content|entry|main|page|post|text|blog|story|prose|markdown)(?:[-_\s]|$)/i;
 const BLOCK = new Set(['ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DETAILS', 'DIV', 'DL', 'DD', 'DT', 'FIELDSET', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HEADER', 'HR', 'LI', 'MAIN', 'NAV', 'OL', 'P', 'PRE', 'SECTION', 'TABLE', 'UL', 'TR', 'TD', 'TH', 'TBODY', 'THEAD', 'TFOOT', 'CAPTION', 'BODY']);
 const textLen = (el) => (el.textContent || '').replace(/\s+/g, ' ').trim().length;
 const linkLen = (el) => { let n = 0; for (const a of el.querySelectorAll('a')) n += textLen(a); return n; };
 const describe = (el) => { let s = el.localName; if (el.id) s += `#${el.id}`; const c = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 3); if (c.length) s += '.' + c.join('.'); return s.slice(0, 120); };
 
-/** Remove page chrome in place and return the densest article-like container. → {el, info} */
+/** Remove page chrome in place and return the densest article-like container. \u2192 {el, info} */
 export function pickMain(doc) {
   const body = doc.body; const removed = { byTag: 0, byRole: 0, byClass: 0, hidden: 0 };
   const total0 = textLen(body) || 1;
@@ -99,7 +99,7 @@ export function pickMain(doc) {
     if (!leaf && u.nodeName !== 'P') continue;
     const len = textLen(u); if (len < 25) continue;
     const ld = linkLen(u) / len;
-    const s = (1 + Math.min(3, Math.floor(len / 100)) + Math.min(10, ((u.textContent || '').match(/[,，、;]/g) || []).length)) * (1 - ld) * (u.nodeName === 'LI' || u.nodeName === 'TD' ? 0.5 : 1);
+    const s = (1 + Math.min(3, Math.floor(len / 100)) + Math.min(10, ((u.textContent || '').match(/[,\uff0c\u3001;]/g) || []).length)) * (1 - ld) * (u.nodeName === 'LI' || u.nodeName === 'TD' ? 0.5 : 1);
     if (s <= 0) continue;
     let level = 0;
     for (let a = u.parentElement; a && a !== body.parentElement; a = a.parentElement, level++) {
@@ -118,9 +118,13 @@ export function pickMain(doc) {
   let reason = 'top-scoring text container';
   if (!top) { top = body; reason = 'no paragraph-like text found; whole body kept'; } else {
     // climb while an ancestor holds substantially more article-like text (content split over sibling sections)
+    // …or adds only a little, link-poor text (typically the title block and lead paragraphs kept beside the body)
     for (let p = top.parentElement; p && p !== body.parentElement; p = p.parentElement) {
-      const len = textLen(p) || 1;
-      if ((deep.get(p) || 0) >= 1.25 * (deep.get(top) || 0) && linkLen(p) / len < 0.4) { top = p; reason = 'top-scoring container widened to an ancestor holding sibling sections'; }
+      const len = textLen(p) || 1; const cur = textLen(top) || 1; const extra = len - cur; const extraLinks = linkLen(p) - linkLen(top);
+      if (extra <= 0) { top = p; continue; }
+      if ((deep.get(p) || 0) >= 1.25 * (deep.get(top) || 0) && linkLen(p) / len < 0.4) { top = p; reason = 'top-scoring container widened to an ancestor holding sibling sections'; continue; }
+      if (extra <= 0.35 * cur && extraLinks / extra < 0.35 && ((deep.get(p) || 0) > (deep.get(top) || 0) || (p.querySelector('h1') && !top.querySelector('h1')))) { top = p; reason = 'top-scoring container widened to include its title / lead block'; continue; }
+      break;
     }
   }
   const kept = textLen(top);
@@ -169,9 +173,21 @@ export async function domToMarkdown(root, opts = {}) {
   const { TurndownService, gfm } = await turndownLib();
   const tables = opts.tables || 'markdown';
   const td = new TurndownService({ headingStyle: 'atx', hr: '---', bulletListMarker: '-', codeBlockStyle: 'fenced', emDelimiter: '*', strongDelimiter: '**', linkStyle: 'inlined' });
-  td.use([gfm.strikethrough, gfm.taskListItems]);
+  td.use([gfm.taskListItems]);
+  td.addRule('strike', { filter: ['del', 's', 'strike'], replacement: (content) => (content.trim() ? `~~${content}~~` : content) });
+  td.addRule('hr', { filter: 'hr', replacement: () => '\n\n---\n\n' });
   td.remove(['script', 'style', 'noscript', 'template', 'head', 'title']);
   td.addRule('pre', { filter: 'pre', replacement: (content, node) => { const text = (node.textContent || '').replace(/\n+$/, '').replace(/^\n/, ''); if (!text.trim()) return ''; const f = fenceFor(text); return `\n\n${f}${langOf(node)}\n${text}\n${f}\n\n`; } });
+  td.addRule('li', {
+    filter: 'li',
+    replacement: (content, node, options) => {
+      content = content.replace(/^\n+/, '').replace(/\n+$/, '\n').replace(/^(\u2611|\u2612|\u2610)\s+/, (m, b) => (b === '\u2610' ? '[ ] ' : '[x] '));
+      const parent = node.parentNode; let prefix = `${options.bulletListMarker} `;
+      if (parent && parent.nodeName === 'OL') { const start = parseInt(parent.getAttribute('start') || '1', 10) || 1; prefix = `${start + Array.prototype.indexOf.call(parent.children, node)}. `; }
+      content = content.replace(/\n/gm, `\n${' '.repeat(prefix.length)}`).replace(/\n +$/, '\n').replace(/\n +\n/g, '\n\n');
+      return prefix + content + (node.nextSibling && !/\n$/.test(content) ? '\n' : '');
+    },
+  });
   td.addRule('figcaption', { filter: 'figcaption', replacement: (content) => (content.trim() ? `\n\n*${content.trim().replace(/\n+/g, ' ')}*\n\n` : '') });
   td.addRule('dt', { filter: 'dt', replacement: (content) => `\n\n**${content.trim()}**\n` });
   td.addRule('dd', { filter: 'dd', replacement: (content) => `\n: ${content.trim().replace(/\n+/g, ' ')}\n` });
@@ -190,7 +206,7 @@ export async function domToMarkdown(root, opts = {}) {
     filter: 'img',
     replacement: (content, node) => { const src = (node.getAttribute('src') || '').trim(); if (!src) return ''; const alt = (node.getAttribute('alt') || '').replace(/[\r\n]+/g, ' ').replace(/([[\]])/g, '\\$1').trim(); return `![${alt}](${src.replace(/\s/g, '%20').replace(/([()])/g, '\\$1')})`; },
   });
-  const inner = (cell) => td.turndown(cell).replace(/\s*\n\s*\n\s*/g, '<br>').replace(/\s*\n\s*/g, ' ').trim();
+  const inner = (cell) => { const s = td.turndown(cell).replace(/\s*\n\s*\n\s*/g, '<br>').replace(/\s*\n\s*/g, ' ').trim(); const m = cell.nodeName === 'TH' ? /^\*\*([^*]+)\*\*$/.exec(s) : null; return m ? m[1] : s; };
   if (tables === 'html') td.keep(['table']);
   else if (tables === 'drop') td.remove(['table']);
   else {
@@ -211,7 +227,7 @@ export async function domToMarkdown(root, opts = {}) {
     td.addRule('caption', { filter: 'caption', replacement: () => '' });
   }
   let md = td.turndown(root);
-  md = md.replace(/ /g, ' ').replace(/[ \t]+\n/g, (m) => (m.length >= 3 && m.endsWith('  \n') ? '  \n' : '\n')).replace(/\n{3,}/g, '\n\n').trim();
+  md = md.replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, (m) => (m.length >= 3 && m.endsWith('  \n') ? '  \n' : '\n')).replace(/\n{3,}/g, '\n\n').trim();
   return md ? md + '\n' : '';
 }
 
@@ -262,13 +278,13 @@ export function domToText(root, { linkUrls = false } = {}) {
     if (block) nl(para || ((n === 'UL' || n === 'OL') && !ctx.depth) ? 2 : 1);
   };
   walk(root, {});
-  return out.replace(/ /g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  return out.replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // ─────────────────────────────────────────────────── Markdown → HTML ──
-export async function markdownToHtml(md) {
+export async function markdownToHtml(md, { breaks = false } = {}) {
   const { marked } = await markedLib();
-  return marked.parse(md.replace(/^﻿/, ''), { gfm: true, async: false });
+  return marked.parse(md.replace(/^\ufeff/, ''), { gfm: true, breaks, async: false });
 }
 export function sanitizeHtml(html) {
   const doc = parseHtml(`<body>${html}</body>`); let removed = 0;
@@ -329,7 +345,7 @@ export async function extractStructure(doc, base) {
     links.push(e);
   }
   const images = [...doc.querySelectorAll('img')].map((img) => {
-    const src = img.getAttribute('src') || ''; const e = { src: src.startsWith('data:') ? `${src.slice(0, 40)}… (data URI, ${src.length} chars)` : abs(src), alt: img.getAttribute('alt') };
+    const src = img.getAttribute('src') || ''; const e = { src: src.startsWith('data:') ? `${src.slice(0, 40)}\u2026 (data URI, ${src.length} chars)` : abs(src), alt: img.getAttribute('alt') };
     for (const k of ['width', 'height']) { const v = parseInt(img.getAttribute(k) || '', 10); if (v) e[k] = v; }
     const t = img.getAttribute('title'); if (t) e.title = t; if (img.getAttribute('srcset')) e.srcset = true;
     const fc = img.closest('figure')?.querySelector('figcaption'); if (fc) e.caption = txt(fc).slice(0, 300);
@@ -337,6 +353,7 @@ export async function extractStructure(doc, base) {
   }).filter((e) => e.src);
   const jsonLd = []; const jsonLdErrors = [];
   for (const s of doc.querySelectorAll('script[type="application/ld+json"]')) { try { const v = JSON.parse(s.textContent); if (Array.isArray(v)) jsonLd.push(...v); else jsonLd.push(v); } catch (e) { jsonLdErrors.push(e.message.slice(0, 120)); } }
+  absolutize(doc.body, base);
   const tables = await tablesOf(doc.body);
   return { page, meta, openGraph: og, twitter, otherMeta: other, headings, links, images, tables, jsonLd, jsonLdErrors };
 }

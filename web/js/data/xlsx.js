@@ -34,7 +34,7 @@ export function serialToISO(serial, kind, date1904) {
   const d = new Date(epoch + ms);
   if (Number.isNaN(d.getTime())) return serial;
   const iso = d.toISOString();
-  if (((ms % 86400000) + 86400000) % 86400000 === 0) return iso.slice(0, 10);
+  if (((ms % 86400000) + 86400000) % 86400000 === 0 && !kind.time) return iso.slice(0, 10);
   return iso.slice(0, d.getUTCMilliseconds() ? 23 : 19);
 }
 
@@ -94,7 +94,7 @@ function readSheet(bytes, shared, styles, date1904) {
         else if (t === 'd') v = raw;
         else if (raw !== '') { const num = Number(raw); const kind = styles[Number(c.getAttribute('s') || 0)]; v = Number.isNaN(num) ? raw : kind ? serialToISO(num, kind, date1904) : num; }
       }
-      if (v === null || v === '') continue;
+      if (v === null || (v === '' && t !== 's' && t !== 'inlineStr' && t !== 'str')) continue;
       out ||= (grid[rowNo - 1] = []);
       out[colNo] = v; cells++;
       if (colNo + 1 > maxCol) maxCol = colNo + 1;

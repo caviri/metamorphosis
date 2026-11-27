@@ -16,11 +16,11 @@ const cap = (list, n) => ({ items: list.slice(0, n), truncated: list.length > n 
 /** Read a VFS file as text for the text.* tools: BOM-aware, refuses binary data with a pointer to the right tool. */
 function readText(path) {
   const bytes = vfs.read(path);
-  if (bytes.length > MAX_TEXT) throw new Error(`"${path}" is ${M.human(bytes.length)}; text tools accept at most ${M.human(MAX_TEXT)} per file — split it first`);
+  if (bytes.length > MAX_TEXT) throw new Error(`"${path}" is ${M.human(bytes.length)}; text tools accept at most ${M.human(MAX_TEXT)} per file \u2014 split it first`);
   if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes.subarray(2));
   if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes.subarray(2));
   const n = Math.min(bytes.length, 8192); let nul = 0; for (let i = 0; i < n; i++) if (bytes[i] === 0) nul++;
-  if (nul > n / 200 || (bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 3) || (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46)) throw new Error(`"${path}" (${vfs.stat(path).mime}) is not a text file — convert it first with doc.toMarkdown / doc.toText (office, epub, html, notebooks) or pdf.* (PDF)`);
+  if (nul > n / 200 || (bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 3) || (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46)) throw new Error(`"${path}" (${vfs.stat(path).mime}) is not a text file \u2014 convert it first with doc.toMarkdown / doc.toText (office, epub, html, notebooks) or pdf.* (PDF)`);
   try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return new TextDecoder('windows-1252').decode(bytes); }
 }
 const textExt = (path, fallback = 'txt') => { const e = vfs.extOf(path); return e && vfs.isTextMime(vfs.mimeOf(path)) ? e : fallback; };
@@ -50,10 +50,10 @@ register({
     const xmlText = (b) => f.decodeText(b).replace(/<\/(w:p|a:p|text:p|text:h|p|div|h\d|li|tr)>/g, '\n').replace(/<[^>]+>/g, '').replace(/&(amp|lt|gt|quot|apos);/g, ' ');
     const z = s.zip;
     if (s.type === 'docx' || s.type === 'pptx') {
-      const m = z.xml('docProps/core.xml') || z.xml('docProps/app.xml') ? (await f.convert(input, { dry: true, images: 'drop', attachments: 'list', notes: true })).meta : {};
-      const { pages, words: storedWords, characters, slides, notes, ...meta } = m;
+      const m = s.type === 'docx' ? f.ooxmlMeta(z) : (await f.convert(input, { dry: true, images: 'drop' })).meta;
+      const { pagesStored: pages, slides, slidesWithNotes, hiddenSlides, ...meta } = m;
       out.metadata = meta;
-      if (s.type === 'docx') { out.words = words(xmlText(z.read('word/document.xml'))); if (pages) out.pagesStored = pages; out.pagesNote = pages ? 'page count as last saved by the authoring application (may be stale); a .docx has no fixed pages until laid out' : 'no stored page count; a .docx has no fixed pages until laid out'; } else { out.slides = slides; out.slidesWithNotes = m.slidesWithNotes; out.hiddenSlides = m.hiddenSlides; }
+      if (s.type === 'docx') { out.words = words(xmlText(z.read('word/document.xml'))); if (pages) out.pagesStored = pages; out.pagesNote = pages ? 'page count as last saved by the authoring application (may be stale); a .docx has no fixed pages until laid out' : 'no stored page count; a .docx has no fixed pages until laid out'; } else { out.slides = slides; out.slidesWithNotes = slidesWithNotes; out.hiddenSlides = hiddenSlides; }
       const media = z.names.filter((n) => /^(word|ppt)\/media\//.test(n)); out.media = { count: media.length, bytes: media.reduce((a, n) => a + z.entries.get(n).size, 0) };
       out.parts = { comments: z.has('word/comments.xml') || z.names.some((n) => /^ppt\/comments\//.test(n)), footnotes: z.has('word/footnotes.xml'), macros: z.names.some((n) => /vbaProject\.bin$/.test(n)), embeddedObjects: z.names.filter((n) => /\/embeddings\//.test(n)).length };
     } else if (s.type === 'odt' || s.type === 'odp') {
@@ -81,7 +81,7 @@ register({
 
 register({
   name: 'doc.toMarkdown',
-  description: `Convert a document to clean Markdown an LLM can read, written to a .md file. One entry point for: ${ACCEPTS}. docx keeps headings, bold/italic, lists, tables, links, footnotes and images; pptx/odp become one "## Slide N: title" section per slide with bullets, tables, pictures and speaker notes; epub chapters follow spine order; ipynb cells keep code fenced with the kernel language, text outputs and image outputs; eml/mbox give headers + body and extract attachments; srt/vtt become a readable transcript. Embedded images are written next to the .md (images=extract) and linked relatively. Returns the output file stat, detected type, title, metadata, an estimated token count and a short excerpt — read the file itself with fs.read, or plan with text.outline / text.chunk. Not for PDF (pdf.toMarkdown / pdf.* tools) or spreadsheets, CSV, JSON (data.convert / data.* tools): for those it fails with the tool to use.`,
+  description: `Convert a document to clean Markdown an LLM can read, written to a .md file. One entry point for: ${ACCEPTS}. docx keeps headings, bold/italic, lists, tables, links, footnotes and images; pptx/odp become one "## Slide N: title" section per slide with bullets, tables, pictures and speaker notes; epub chapters follow spine order; ipynb cells keep code fenced with the kernel language, text outputs and image outputs; eml/mbox give headers + body and extract attachments; srt/vtt become a readable transcript. Embedded images are written next to the .md (images=extract) and linked relatively. Returns the output file stat, detected type, title, metadata, an estimated token count and a short excerpt \u2014 read the file itself with fs.read, or plan with text.outline / text.chunk. Not for PDF (pdf.toMarkdown / pdf.* tools) or spreadsheets, CSV, JSON (data.convert / data.* tools): for those it fails with the tool to use.`,
   schema: {
     properties: {
       input: { type: 'string', description: `VFS path of the source document (${ACCEPTS})` },
@@ -129,11 +129,11 @@ register({
     const f = await F(); const t = await T();
     const outPath = vfs.out(args.output, args.input, vfs.extOf(args.input) === 'txt' ? 'plain' : '', 'txt');
     const s = await f.sniff(args.input); const type = args.type !== 'auto' ? args.type : s.type; let text; let warnings = []; let title = null;
-    if (type === 'text') text = (s.text ?? f.decodeText(s.bytes)).replace(/^﻿/, '').replace(/\r\n?/g, '\n');
+    if (type === 'text') text = (s.text ?? f.decodeText(s.bytes)).replace(/^\ufeff/, '').replace(/\r\n?/g, '\n');
     else if (type === 'srt' || type === 'vtt') { const sub = await S(); const p = sub.parseSubs(s.text ?? f.decodeText(s.bytes)); if (!p.cues.length) throw new Error(`no subtitle cues found in "${args.input}"`); text = sub.toTranscript(p.cues, { timestamps: args.timestamps }); } else {
       const { imageAlt, linkUrls, ...rest } = args;
       const r = await f.convert(args.input, { ...rest, images: imageAlt ? 'alt' : 'drop', attachments: 'list', tables: 'markdown', dry: true, mdPath: outPath, tool: 'doc.toText' }, ctx);
-      const h = await H(); const doc = h.parseHtml(await h.markdownToHtml(r.markdown));
+      const h = await H(); const doc = h.parseHtml(await h.markdownToHtml(r.markdown, { breaks: true }));
       text = h.domToText(doc.body, { linkUrls }) + '\n'; warnings = r.warnings; title = r.title;
     }
     const output = await vfs.write(outPath, text, { mime: 'text/plain' }); const st = t.textStats(text);
@@ -145,7 +145,7 @@ register({
 
 register({
   name: 'doc.toHtml',
-  description: 'Render a document as HTML. Markdown → HTML with GFM tables/task lists/strikethrough (marked); docx → HTML directly (mammoth, images embedded as data: URIs by default); every other doc.toMarkdown input goes through Markdown first. By default the result is a standalone page with a small embedded stylesheet — theme=light, or theme=terminal for a dark monospace look — and no external requests. Raw HTML inside Markdown is sanitised (scripts, iframes, event handlers and javascript: URLs removed) unless sanitize=false. Returns the output stat and title. For PDF output see pdf.fromMarkdown / pdf.* if registered.',
+  description: 'Render a document as HTML. Markdown \u2192 HTML with GFM tables/task lists/strikethrough (marked); docx \u2192 HTML directly (mammoth, images embedded as data: URIs by default); every other doc.toMarkdown input goes through Markdown first. By default the result is a standalone page with a small embedded stylesheet \u2014 theme=light, or theme=terminal for a dark monospace look \u2014 and no external requests. Raw HTML inside Markdown is sanitised (scripts, iframes, event handlers and javascript: URLs removed) unless sanitize=false. Returns the output stat and title. For PDF output see pdf.fromMarkdown / pdf.* if registered.',
   schema: {
     properties: {
       input: { type: 'string', description: 'VFS path: a Markdown file, a .docx, or anything doc.toMarkdown accepts' },
@@ -154,7 +154,7 @@ register({
       standalone: { type: 'boolean', default: true, description: 'true = full <!doctype html> page with <head>, charset and CSS; false = body fragment only' },
       title: { type: 'string', description: 'Page <title> (default: document title or first heading)' },
       sanitize: { type: 'boolean', default: true, description: 'Strip scripts, iframes, forms, on* handlers and javascript: URLs from the generated HTML' },
-      images: { type: 'string', enum: ['inline', 'extract', 'drop'], default: 'inline', description: 'Embedded images of docx/pptx/epub…: inline = data: URIs (self-contained file), extract = separate files linked relatively, drop = removed. Image links in a Markdown input are left as they are.' },
+      images: { type: 'string', enum: ['inline', 'extract', 'drop'], default: 'inline', description: 'Embedded images of docx/pptx/epub\u2026: inline = data: URIs (self-contained file), extract = separate files linked relatively, drop = removed. Image links in a Markdown input are left as they are.' },
     },
     required: ['input'],
   },
@@ -163,14 +163,14 @@ register({
     const f = await F(); const h = await H();
     const outPath = vfs.out(args.output, args.input, /^html?$/.test(vfs.extOf(args.input)) ? 'page' : '', 'html');
     const s = await f.sniff(args.input); let body; let title = args.title || null; let via; let warnings = []; let outputs = [];
-    if (s.type === 'html') throw new Error(`"${args.input}" is already HTML — use doc.htmlToMarkdown to convert it, or doc.htmlExtract to pull data out of it`);
+    if (s.type === 'html') throw new Error(`"${args.input}" is already HTML \u2014 use doc.htmlToMarkdown to convert it, or doc.htmlExtract to pull data out of it`);
     if (s.type === 'docx') {
       const r = await f.docxToHtml(s.bytes, { images: args.images !== 'drop' }); const doc = h.parseHtml(r.html); const sink = f.makeSink(outPath, null);
       for (const img of [...doc.querySelectorAll('img')]) { const e = r.store.get(img.getAttribute('src')); if (!e) { img.remove(); continue; } img.setAttribute('src', args.images === 'extract' ? await sink.put(e.name, e.bytes, e.mime, e.key) : `data:${e.mime};base64,${M.b64.enc(e.bytes)}`); }
-      body = doc.body.innerHTML; via = 'mammoth (docx → html)'; warnings = r.warnings; outputs = sink.outputs; title ||= doc.querySelector('h1')?.textContent.trim() || null;
+      body = doc.body.innerHTML; via = 'mammoth (docx \u2192 html)'; warnings = r.warnings; outputs = sink.outputs; title ||= doc.querySelector('h1')?.textContent.trim() || null;
     } else {
       let md;
-      if (s.type === 'markdown' || s.type === 'text') { md = (s.text ?? f.decodeText(s.bytes)).replace(/^﻿/, ''); via = 'marked (markdown → html)'; } else { const r = await f.convert(args.input, { images: args.images, mdPath: outPath.replace(/\.html?$/, '.md'), tool: 'doc.toHtml' }, ctx); md = r.markdown; title ||= r.title; warnings = r.warnings; outputs = r.outputs; via = `${r.type} → markdown → html`; }
+      if (s.type === 'markdown' || s.type === 'text') { md = (s.text ?? f.decodeText(s.bytes)).replace(/^\ufeff/, ''); via = 'marked (markdown \u2192 html)'; } else { const r = await f.convert(args.input, { images: args.images, mdPath: outPath.replace(/\.html?$/, '.md'), tool: 'doc.toHtml' }, ctx); md = r.markdown; title ||= r.title; warnings = r.warnings; outputs = r.outputs; via = `${r.type} \u2192 markdown \u2192 html`; }
       body = await h.markdownToHtml(md); title ||= (/^#\s+(.+)$/m.exec(md) || [])[1]?.replace(/[*_`]/g, '') || null;
     }
     let removed = 0; if (args.sanitize) { const r = h.sanitizeHtml(body); body = r.html; removed = r.removed; }
@@ -186,7 +186,7 @@ register({
 
 register({
   name: 'doc.htmlToMarkdown',
-  description: 'Convert an HTML file (a saved web page or fragment) to Markdown. mainContentOnly=true runs a readability-style extraction first: removes script/style/nav/aside/footer/forms, hidden nodes and elements whose class or id marks them as chrome (menu, sidebar, cookie, share, related, comments…), then keeps the densest article-like container (paragraph text scored by length and punctuation, penalised by link density); the result reports which element was kept and what fraction of the page text survived, so you can fall back to mainContentOnly=false if it cut too much. baseUrl rewrites relative links and image sources to absolute URLs. Returns the .md stat, title, estimated tokens and a short excerpt. For structured data (links, meta tags, tables, JSON-LD) use doc.htmlExtract.',
+  description: 'Convert an HTML file (a saved web page or fragment) to Markdown. mainContentOnly=true runs a readability-style extraction first: removes script/style/nav/aside/footer/forms, hidden nodes and elements whose class or id marks them as chrome (menu, sidebar, cookie, share, related, comments\u2026), then keeps the densest article-like container (paragraph text scored by length and punctuation, penalised by link density); the result reports which element was kept and what fraction of the page text survived, so you can fall back to mainContentOnly=false if it cut too much. baseUrl rewrites relative links and image sources to absolute URLs. Returns the .md stat, title, estimated tokens and a short excerpt. For structured data (links, meta tags, tables, JSON-LD) use doc.htmlExtract.',
   schema: {
     properties: {
       input: { type: 'string', description: 'VFS path of the HTML file' },
@@ -204,7 +204,7 @@ register({
   examples: ['doc.htmlToMarkdown input=article.html mainContentOnly=true baseUrl=https://example.org/a/b'],
   async run(args, ctx) {
     const f = await F(); const bytes = vfs.read(args.input);
-    if (bytes[0] === 0x50 && bytes[1] === 0x4b || bytes[0] === 0x25 && bytes[1] === 0x50) throw new Error(`"${args.input}" is not HTML — use doc.toMarkdown (office/epub) or pdf.* (PDF)`);
+    if (bytes[0] === 0x50 && bytes[1] === 0x4b || bytes[0] === 0x25 && bytes[1] === 0x50) throw new Error(`"${args.input}" is not HTML \u2014 use doc.toMarkdown (office/epub) or pdf.* (PDF)`);
     if (args.baseUrl) { try { new URL(args.baseUrl); } catch { throw new Error(`baseUrl "${args.baseUrl}" is not an absolute URL (expected e.g. https://example.org/page)`); } }
     const mdPath = vfs.out(args.output, args.input, '', 'md');
     const r = await f.convert(args.input, { ...args, type: 'html', mdPath, tool: 'doc.htmlToMarkdown' }, ctx);
@@ -239,20 +239,20 @@ register({
     const want = new Set(include); const res = { page: full.page };
     const list = (key, arr, map = (v) => v) => { res[key] = arr.slice(0, limit).map(map); res.counts[key] = arr.length; if (arr.length > limit) (res.truncated ||= []).push(key); };
     res.counts = {};
-    if (want.has('meta')) { res.meta = full.meta; res.openGraph = full.openGraph; res.twitter = full.twitter; const om = Object.entries(full.otherMeta); res.otherMeta = Object.fromEntries(om.slice(0, limit)); if (om.length > limit) (res.truncated ||= []).push('otherMeta'); for (const o of [res.meta, res.openGraph, res.twitter, res.otherMeta]) for (const k in o) if (typeof o[k] === 'string' && o[k].length > 500) o[k] = o[k].slice(0, 500) + '…'; }
+    if (want.has('meta')) { res.meta = full.meta; res.openGraph = full.openGraph; res.twitter = full.twitter; const om = Object.entries(full.otherMeta); res.otherMeta = Object.fromEntries(om.slice(0, limit)); if (om.length > limit) (res.truncated ||= []).push('otherMeta'); for (const o of [res.meta, res.openGraph, res.twitter, res.otherMeta]) for (const k in o) if (typeof o[k] === 'string' && o[k].length > 500) o[k] = o[k].slice(0, 500) + '\u2026'; }
     if (want.has('headings')) list('headings', full.headings, (x) => ({ ...x, text: x.text.slice(0, 200) }));
     if (want.has('links')) { list('links', full.links); const kinds = {}; for (const l of full.links) kinds[l.kind] = (kinds[l.kind] || 0) + 1; res.linkKinds = kinds; }
     if (want.has('images')) list('images', full.images);
-    if (want.has('tables')) list('tables', full.tables, (t) => (t.markdown.length > 2000 ? { ...t, markdown: t.markdown.slice(0, 2000) + '\n…', markdownTruncated: true } : t));
+    if (want.has('tables')) list('tables', full.tables, (t) => (t.markdown.length > 2000 ? { ...t, markdown: t.markdown.slice(0, 2000) + '\n\u2026', markdownTruncated: true } : t));
     if (want.has('jsonLd')) { let budget = 12000; const kept = []; for (const j of full.jsonLd.slice(0, limit)) { const sz = JSON.stringify(j).length; if (sz > budget) { (res.truncated ||= []).push('jsonLd'); break; } budget -= sz; kept.push(j); } res.jsonLd = kept; res.counts.jsonLd = full.jsonLd.length; if (full.jsonLd.length > kept.length && !res.truncated?.includes('jsonLd')) (res.truncated ||= []).push('jsonLd'); if (full.jsonLdErrors.length) res.jsonLdErrors = full.jsonLdErrors.slice(0, 5); }
-    if (output) res.output = await vfs.write(output, JSON.stringify(full, null, 1), { mime: 'application/json' }); else if (res.truncated) res.hint = 'lists were capped — pass output=<path>.json to write everything, or raise limit';
+    if (output) res.output = await vfs.write(output, JSON.stringify(full, null, 1), { mime: 'application/json' }); else if (res.truncated) res.hint = 'lists were capped \u2014 pass output=<path>.json to write everything, or raise limit';
     return res;
   },
 });
 
 register({
   name: 'doc.fromMarkdown',
-  description: 'Build a document from a Markdown file. to=docx writes a real Word file (OOXML generated here, no template): headings 1–6 with Word heading styles, paragraphs, bold/italic/strikethrough/inline code, links, nested bullet and numbered lists, task lists, tables with a header row and column alignment, fenced code blocks, block quotes, horizontal rules, and images that exist in the VFS (embedded; remote images become hyperlinks). Not carried over: raw HTML blocks (flattened to text), footnote syntax, math, syntax highlighting. to=html writes a standalone themed page (same as doc.toHtml). to=pdf delegates to pdf.fromMarkdown when that tool is registered. Returns the output stat and counts of what was written.',
+  description: 'Build a document from a Markdown file. to=docx writes a real Word file (OOXML generated here, no template): headings 1\u20136 with Word heading styles, paragraphs, bold/italic/strikethrough/inline code, links, nested bullet and numbered lists, task lists, tables with a header row and column alignment, fenced code blocks, block quotes, horizontal rules, and images that exist in the VFS (embedded; remote images become hyperlinks). Not carried over: raw HTML blocks (flattened to text), footnote syntax, math, syntax highlighting. to=html writes a standalone themed page (same as doc.toHtml). to=pdf delegates to pdf.fromMarkdown when that tool is registered. Returns the output stat and counts of what was written.',
   schema: {
     properties: {
       input: { type: 'string', description: 'VFS path of the Markdown file' },
@@ -268,7 +268,7 @@ register({
   examples: ['doc.fromMarkdown input=notes.md', 'doc.fromMarkdown input=notes.md to=html theme=terminal'],
   async run({ input, to, output, title, author, pageSize, theme }) {
     if (to === 'pdf') {
-      if (!M.tools.has('pdf.fromMarkdown')) throw new Error('to=pdf needs the tool pdf.fromMarkdown, which is not registered in this page — use to=html (then print to PDF) or to=docx');
+      if (!M.tools.has('pdf.fromMarkdown')) throw new Error('to=pdf needs the tool pdf.fromMarkdown, which is not registered in this page \u2014 use to=html (then print to PDF) or to=docx');
       const a = { input }; if (output) a.output = output;
       return { delegatedTo: 'pdf.fromMarkdown', ...(await M.run('pdf.fromMarkdown', a)) };
     }
@@ -284,7 +284,7 @@ register({
 
 register({
   name: 'doc.subtitles',
-  description: 'Convert and retime subtitles: SRT ⇄ WebVTT, or to a plain transcript (txt / md) or a JSON cue list. Times can be shifted (shiftSeconds, negative = earlier; cues that end before 0 are dropped) and scaled (scale, e.g. 25/23.976 = 1.04271 to fix a frame-rate mismatch; applied before the shift). Transcripts merge cues into paragraphs, remove rolling duplicate lines from auto-captions and strip inline tags. Returns the output stat, cue count and duration.',
+  description: 'Convert and retime subtitles: SRT \u21c4 WebVTT, or to a plain transcript (txt / md) or a JSON cue list. Times can be shifted (shiftSeconds, negative = earlier; cues that end before 0 are dropped) and scaled (scale, e.g. 25/23.976 = 1.04271 to fix a frame-rate mismatch; applied before the shift). Transcripts merge cues into paragraphs, remove rolling duplicate lines from auto-captions and strip inline tags. Returns the output stat, cue count and duration.',
   schema: {
     properties: {
       input: { type: 'string', description: 'VFS path of an .srt or .vtt file (format is sniffed from content)' },
@@ -292,7 +292,7 @@ register({
       output: { type: 'string', description: 'VFS path to write (default: derived from input)' },
       shiftSeconds: { type: 'number', default: 0, minimum: -86400, maximum: 86400, description: 'Add this many seconds to every time stamp (after scaling)' },
       scale: { type: 'number', default: 1, minimum: 0.1, maximum: 10, description: 'Multiply every time stamp by this factor (before shifting)' },
-      stripTags: { type: 'boolean', default: false, description: 'srt/vtt output: remove inline formatting tags (<i>, <b>, <c.class>, {\\an8}…)' },
+      stripTags: { type: 'boolean', default: false, description: 'srt/vtt output: remove inline formatting tags (<i>, <b>, <c.class>, {\\an8}\u2026)' },
       timestamps: { type: 'string', enum: ['collapse', 'keep', 'none'], default: 'collapse', description: 'txt/md output: collapse = one [hh:mm:ss] per paragraph, keep = one line per cue with its range, none = text only' },
     },
     required: ['input'],
@@ -300,7 +300,7 @@ register({
   examples: ['doc.subtitles input=talk.srt to=vtt', 'doc.subtitles input=talk.vtt to=srt shiftSeconds=-1.5', 'doc.subtitles input=talk.srt to=txt timestamps=none'],
   async run({ input, to, output, shiftSeconds, scale, stripTags, timestamps }) {
     const sub = await S(); const text = readText(input); const p = sub.parseSubs(text);
-    if (!p.cues.length) throw new Error(`no cues found in "${input}" — expected SRT or WebVTT timing lines like "00:00:01,000 --> 00:00:04,000"`);
+    if (!p.cues.length) throw new Error(`no cues found in "${input}" \u2014 expected SRT or WebVTT timing lines like "00:00:01,000 --> 00:00:04,000"`);
     const { cues, dropped } = sub.retime(p.cues, { shiftMs: shiftSeconds * 1000, scale });
     let body; let mime;
     if (to === 'srt') { body = sub.toSrt(cues, { strip: stripTags }); mime = vfs.mimeOf('x.srt'); } else if (to === 'vtt') { body = sub.toVtt(cues, { strip: stripTags, header: p.header }); mime = 'text/vtt'; } else if (to === 'json') { body = JSON.stringify(cues.map((c, i) => ({ index: i + 1, start: c.start / 1000, end: c.end / 1000, text: sub.stripTags(c.text) })), null, 1); mime = 'application/json'; } else { body = sub.toTranscript(cues, { timestamps, markdown: to === 'md' }); mime = to === 'md' ? 'text/markdown' : 'text/plain'; }
@@ -328,7 +328,7 @@ register({
   examples: ['doc.media input=deck.pptx', 'doc.media input=book.epub extract=true kinds=image'],
   async run({ input, extract, kinds, prefix, limit }) {
     const f = await F(); const s = await f.sniff(input);
-    if (!s.zip) throw new Error(`"${input}" (detected: ${s.type}) is not a zip-based document — doc.media reads docx, pptx, xlsx, odt, odp, ods and epub. For email attachments use doc.toMarkdown; for PDF images use pdf.*`);
+    if (!s.zip) throw new Error(`"${input}" (detected: ${s.type}) is not a zip-based document \u2014 doc.media reads docx, pptx, xlsx, odt, odp, ods and epub. For email attachments use doc.toMarkdown; for PDF images use pdf.*`);
     const z = s.zip; const want = new Set(kinds);
     const kindOf = (name, mime) => (/^image\//.test(mime) ? 'image' : /^audio\//.test(mime) ? 'audio' : /^video\//.test(mime) ? 'video' : /^font\/|\.(ttf|otf|woff2?|odttf)$/i.test(mime + name) ? 'font' : 'other');
     let cands;
@@ -358,8 +358,8 @@ register({
 // ════════════════════════════════════════════════════════════ text ══
 register({
   name: 'text.stats', readOnly: true,
-  description: 'Measure a text file: bytes, characters, words, lines, paragraphs, sentences (approximate), reading time, a language and script guess, and an estimated LLM token count. The token figure is a character-class heuristic, NOT a real tokenizer: expect about ±15% on English prose and ±25–35% on code, tables, CJK or mixed-language text, and real tokenizers differ from each other too — use it to budget context, not to bill. Language is guessed from scripts plus stop-word frequency for 13 Latin-script languages; null when unsure.',
-  schema: { properties: { input: { type: 'string', description: 'VFS path of a text file (txt, md, csv, json, code…)' } }, required: ['input'] },
+  description: 'Measure a text file: bytes, characters, words, lines, paragraphs, sentences (approximate), reading time, a language and script guess, and an estimated LLM token count. The token figure is a character-class heuristic, NOT a real tokenizer: expect about \u00b115% on English prose and \u00b125\u201335% on code, tables, CJK or mixed-language text, and real tokenizers differ from each other too \u2014 use it to budget context, not to bill. Language is guessed from scripts plus stop-word frequency for 13 Latin-script languages; null when unsure.',
+  schema: { properties: { input: { type: 'string', description: 'VFS path of a text file (txt, md, csv, json, code\u2026)' } }, required: ['input'] },
   examples: ['text.stats input=report.md'],
   async run({ input }) {
     const t = await T(); const text = readText(input); const lang = t.guessLanguage(text);
@@ -369,12 +369,12 @@ register({
 
 register({
   name: 'text.chunk',
-  description: 'Split a text or Markdown file into chunks that each fit a token budget, for retrieval or for feeding a long document to a model piece by piece. Cuts prefer, in order: a heading, a paragraph / code-block / table boundary, a line, a sentence, a word — a hard character cut happens only inside a single unbroken token run longer than a quarter of the budget. Fenced code blocks are kept whole when they fit. Optional overlap repeats the tail of each chunk at the start of the next. Every chunk is an exact byte slice of the source, so concatenating the chunks (each minus its first overlapBytes bytes) reproduces the file. Writes NNNN.<ext> chunk files plus manifest.json under a prefix; returns the manifest head (index, path, heading path, estimated tokens, byte range). Token counts use the text.stats heuristic (not a real tokenizer — leave ~30% headroom below a hard model limit).',
+  description: 'Split a text or Markdown file into chunks that each fit a token budget, for retrieval or for feeding a long document to a model piece by piece. Cuts prefer, in order: a heading, a paragraph / code-block / table boundary, a line, a sentence, a word \u2014 a hard character cut happens only inside a single unbroken token run longer than a quarter of the budget. Fenced code blocks are kept whole when they fit. Optional overlap repeats the tail of each chunk at the start of the next. Every chunk is an exact byte slice of the source, so concatenating the chunks (each minus its first overlapBytes bytes) reproduces the file. Writes NNNN.<ext> chunk files plus manifest.json under a prefix; returns the manifest head (index, path, heading path, estimated tokens, byte range). Token counts use the text.stats heuristic (not a real tokenizer \u2014 leave ~30% headroom below a hard model limit).',
   schema: {
     properties: {
       input: { type: 'string', description: 'VFS path of the text/Markdown file' },
       maxTokens: { type: 'integer', default: 800, minimum: 16, maximum: 500000, description: 'Budget per chunk in estimated tokens (overlap included); no chunk exceeds it' },
-      overlapTokens: { type: 'integer', default: 0, minimum: 0, maximum: 250000, description: 'Estimated tokens repeated from the end of the previous chunk (at most half of maxTokens; aligned to sentence/line boundaries, so the actual overlap is ≤ this)' },
+      overlapTokens: { type: 'integer', default: 0, minimum: 0, maximum: 250000, description: 'Estimated tokens repeated from the end of the previous chunk (at most half of maxTokens; aligned to sentence/line boundaries, so the actual overlap is \u2264 this)' },
       markdown: { type: 'string', enum: ['auto', 'true', 'false'], default: 'auto', description: 'Treat # headings, fenced code and tables as structure. auto = yes for .md/.markdown files, and for other files that contain ATX headings' },
       prefix: { type: 'string', description: 'VFS prefix for the chunk files (default: <input stem>.chunks)' },
     },
@@ -383,7 +383,7 @@ register({
   examples: ['text.chunk input=book.md maxTokens=1500 overlapTokens=150'],
   async run({ input, maxTokens, overlapTokens, markdown, prefix }, ctx) {
     const t = await T(); const text = readText(input);
-    if (!text.length) throw new Error(`"${input}" is empty — nothing to chunk`);
+    if (!text.length) throw new Error(`"${input}" is empty \u2014 nothing to chunk`);
     if (overlapTokens > maxTokens / 2) throw new Error(`overlapTokens (${overlapTokens}) must be at most half of maxTokens (${maxTokens})`);
     const isMd = markdown === 'true' || (markdown === 'auto' && (/^(md|markdown|mdown)$/.test(vfs.extOf(input)) || /^#{1,6} \S/m.test(text.slice(0, 200000))));
     const { chunks } = t.chunkText(text, { budget: maxTokens, overlap: overlapTokens, markdown: isMd });
@@ -409,7 +409,7 @@ register({
 
 register({
   name: 'text.diff',
-  description: 'Line-based unified diff of two text files (Myers algorithm), written as a .diff file that `patch` / `git apply` understand. Returns added/removed/unchanged line counts, hunk count, a 0–1 similarity ratio and the head of the diff. Line endings are compared as LF. If the files differ by more than 3000 edit steps in their changed middle the diff falls back to one big replace hunk and sets approximate=true. Use ignoreWhitespace / ignoreCase to hide noise.',
+  description: 'Line-based unified diff of two text files (Myers algorithm), written as a .diff file that `patch` / `git apply` understand. Returns added/removed/unchanged line counts, hunk count, a 0\u20131 similarity ratio and the head of the diff. Line endings are compared as LF. If the files differ by more than 3000 edit steps in their changed middle the diff falls back to one big replace hunk and sets approximate=true. Use ignoreWhitespace / ignoreCase to hide noise.',
   schema: {
     properties: {
       a: { type: 'string', description: 'VFS path of the old / left file' },
@@ -461,7 +461,7 @@ register({
     if (!paths.length) throw new Error('give input, inputs or prefix (no files to search)');
     const files = []; const skipped = []; let total = 0;
     for (const p of paths) {
-      try { const text = readText(p); total += text.length; if (total > MAX_TEXT) throw new Error(`more than ${M.human(MAX_TEXT)} of text selected — narrow the prefix`); files.push({ path: p, text }); } catch (e) { if (paths.length === 1 || /more than/.test(e.message)) throw e; skipped.push(p); }
+      try { const text = readText(p); total += text.length; if (total > MAX_TEXT) throw new Error(`more than ${M.human(MAX_TEXT)} of text selected \u2014 narrow the prefix`); files.push({ path: p, text }); } catch (e) { if (paths.length === 1 || /more than/.test(e.message)) throw e; skipped.push(p); }
     }
     if (!files.length) throw new Error(`none of the ${paths.length} selected files is a text file`);
     const r = await t.runRegexJob({ kind: 'grep', files, source, flags: fl, context, invert, max: maxMatches, maxLine: 10000, maxText: 300 }, timeoutMs);
@@ -475,7 +475,7 @@ register({
 
 register({
   name: 'text.replace',
-  description: 'Regex (or literal) search-and-replace over a whole text file, written to a new file; the source is left untouched unless output names it. The replacement supports $1…$99, $<name>, $& (whole match) and $$ like JavaScript String.replace; all matches are replaced. Returns the number of replacements and the output stat. Same runaway-regex guard as text.grep: runs in a Worker killed after timeoutMs.',
+  description: 'Regex (or literal) search-and-replace over a whole text file, written to a new file; the source is left untouched unless output names it. The replacement supports $1\u2026$99, $<name>, $& (whole match) and $$ like JavaScript String.replace; all matches are replaced. Returns the number of replacements and the output stat. Same runaway-regex guard as text.grep: runs in a Worker killed after timeoutMs.',
   schema: {
     properties: {
       input: { type: 'string', description: 'VFS path of the text file' },
@@ -506,8 +506,8 @@ register({
       eol: { type: 'string', enum: ['lf', 'crlf', 'keep'], default: 'lf', description: 'Line endings to write' },
       unicode: { type: 'string', enum: ['NFC', 'NFKC', 'NFD', 'NFKD', 'none'], default: 'NFC', description: 'Unicode normalisation form' },
       stripControl: { type: 'boolean', default: true, description: 'Remove C0/C1 control characters (except tab and newlines), zero-width and bidi marks, soft hyphens, stray BOMs' },
-      asciiQuotes: { type: 'boolean', default: false, description: 'Curly quotes → \' and ", en/em dashes → - and --, … → ..., non-breaking and thin spaces → space' },
-      collapseWhitespace: { type: 'boolean', default: false, description: 'Runs of spaces/tabs inside a line → one space (indentation is kept), 3+ line breaks → one blank line, trailing whitespace trimmed' },
+      asciiQuotes: { type: 'boolean', default: false, description: 'Curly quotes \u2192 \' and ", en/em dashes \u2192 - and --, \u2026 \u2192 ..., non-breaking and thin spaces \u2192 space' },
+      collapseWhitespace: { type: 'boolean', default: false, description: 'Runs of spaces/tabs inside a line \u2192 one space (indentation is kept), 3+ line breaks \u2192 one blank line, trailing whitespace trimmed' },
       trimTrailing: { type: 'boolean', default: true, description: 'Remove spaces and tabs at line ends' },
       tabs: { type: 'integer', default: 0, minimum: 0, maximum: 16, description: 'Replace each tab with this many spaces (0 = keep tabs)' },
       finalNewline: { type: 'boolean', default: false, description: 'Make sure the file ends with a line break' },
@@ -552,7 +552,7 @@ register({
       seen.set(k, 1); out.push(l);
     }
     const st = await vfs.write(vfs.out(output, input, 'dedupe', textExt(input)), out.join(eol) + (final ? eol : ''), { mime: vfs.stat(input).mime });
-    const top = [...seen.entries()].filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([line, count]) => ({ line: line.length > 200 ? line.slice(0, 200) + '…' : line, count }));
+    const top = [...seen.entries()].filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([line, count]) => ({ line: line.length > 200 ? line.slice(0, 200) + '\u2026' : line, count }));
     return { output: st, linesIn: lines.length, linesOut: out.length, removed: lines.length - out.length, mostRepeated: top };
   },
 });
@@ -596,7 +596,7 @@ register({
 
 register({
   name: 'text.outline', readOnly: true,
-  description: 'Heading tree of a Markdown file with an estimated token count per section — use it to decide which parts of a long document to read. Each entry has level, title, line number, ownTokens (the section body up to the next heading), tokens (including its sub-sections) and a byte range you can pass straight to fs.read (offset=byteStart, length=byteEnd-byteStart). Recognises ATX (#) and setext (=== / ---) headings and ignores fenced code. Token counts are the text.stats heuristic, not a real tokenizer.',
+  description: 'Heading tree of a Markdown file with an estimated token count per section \u2014 use it to decide which parts of a long document to read. Each entry has level, title, line number, ownTokens (the section body up to the next heading), tokens (including its sub-sections) and a byte range you can pass straight to fs.read (offset=byteStart, length=byteEnd-byteStart). Recognises ATX (#) and setext (=== / ---) headings and ignores fenced code. Token counts are the text.stats heuristic, not a real tokenizer.',
   schema: {
     properties: {
       input: { type: 'string', description: 'VFS path of the Markdown file' },
@@ -609,10 +609,10 @@ register({
   async run({ input, maxDepth, limit }) {
     const t = await T(); const text = readText(input); const o = t.outline(text);
     const shown = o.nodes.filter((n) => n.level <= maxDepth);
-    const sections = shown.slice(0, limit).map((n) => ({ index: n.index, level: n.level, title: n.title.length > 160 ? n.title.slice(0, 160) + '…' : n.title, line: n.line, tokens: n.tokens, ownTokens: n.ownTokens, byteStart: n.byteStart, byteEnd: n.byteEnd }));
+    const sections = shown.slice(0, limit).map((n) => ({ index: n.index, level: n.level, title: n.title.length > 160 ? n.title.slice(0, 160) + '\u2026' : n.title, line: n.line, tokens: n.tokens, ownTokens: n.ownTokens, byteStart: n.byteStart, byteEnd: n.byteEnd }));
     const res = { headings: o.nodes.length, totalEstimatedTokens: t.estimateTokens(text), bytes: t.utf8Length(text), preamble: o.preamble, sections };
     if (shown.length > limit) res.truncated = true;
-    if (!o.nodes.length) res.hint = 'no Markdown headings found — use text.chunk to split by size, or text.grep to locate passages';
+    if (!o.nodes.length) res.hint = 'no Markdown headings found \u2014 use text.chunk to split by size, or text.grep to locate passages';
     return res;
   },
 });
@@ -620,7 +620,7 @@ register({
 const KINDS = ['emails', 'urls', 'dates', 'numbers', 'hashes', 'ips', 'uuids', 'phones'];
 register({
   name: 'text.extract', readOnly: true,
-  description: 'Find entities in a text file by pattern: emails, urls (http/https/ftp), dates (ISO 8601, 31/12/2024-style, English month names), numbers (with thousands separators, decimals, exponents, %), hashes (hex strings of MD5/SHA-1/SHA-256/SHA-512 length), ips (IPv4 and IPv6, validated), uuids, phones (7–15 digits with common separators). Returns, per kind, the total and unique counts and the values with their frequencies, most frequent first, capped at limit. Pattern-based: expect some false positives (e.g. version numbers among numbers, order numbers among phones) and no understanding of context.',
+  description: 'Find entities in a text file by pattern: emails, urls (http/https/ftp), dates (ISO 8601, 31/12/2024-style, English month names), numbers (with thousands separators, decimals, exponents, %), hashes (hex strings of MD5/SHA-1/SHA-256/SHA-512 length), ips (IPv4 and IPv6, validated), uuids, phones (7\u201315 digits with common separators). Returns, per kind, the total and unique counts and the values with their frequencies, most frequent first, capped at limit. Pattern-based: expect some false positives (e.g. version numbers among numbers, order numbers among phones) and no understanding of context.',
   schema: {
     properties: {
       input: { type: 'string', description: 'VFS path of the text file' },
@@ -649,13 +649,13 @@ register({
 
 register({
   name: 'text.redact',
-  description: 'Mask personal-looking data in a text file and write the redacted copy: email addresses, phone numbers, credit-card-like numbers (13–19 digits passing the Luhn check), IPv4/IPv6 addresses. Returns a count per kind. This is PATTERN-BASED redaction: it does not find names, postal addresses, IDs, or anything phrased unusually, and it can mask look-alikes (order numbers, version strings). Treat the output as reduced-risk, not anonymised; review before sharing.',
+  description: 'Mask personal-looking data in a text file and write the redacted copy: email addresses, phone numbers, credit-card-like numbers (13\u201319 digits passing the Luhn check), IPv4/IPv6 addresses. Returns a count per kind. This is PATTERN-BASED redaction: it does not find names, postal addresses, IDs, or anything phrased unusually, and it can mask look-alikes (order numbers, version strings). Treat the output as reduced-risk, not anonymised; review before sharing.',
   schema: {
     properties: {
       input: { type: 'string', description: 'VFS path of the text file' },
       output: { type: 'string', description: 'VFS path to write (default: <input stem>.redacted.<ext>)' },
       kinds: { type: 'array', items: { type: 'string', enum: ['emails', 'phones', 'cards', 'ips'] }, default: ['emails', 'phones', 'cards', 'ips'], description: 'What to mask' },
-      mask: { type: 'string', enum: ['label', 'stars', 'numbered'], default: 'label', description: 'label = [EMAIL] / [PHONE] / [CARD] / [IP]; stars = same-length ****; numbered = [EMAIL_1], [EMAIL_2]… with the same value always getting the same number (keeps who-is-who readable)' },
+      mask: { type: 'string', enum: ['label', 'stars', 'numbered'], default: 'label', description: 'label = [EMAIL] / [PHONE] / [CARD] / [IP]; stars = same-length ****; numbered = [EMAIL_1], [EMAIL_2]\u2026 with the same value always getting the same number (keeps who-is-who readable)' },
     },
     required: ['input'],
   },

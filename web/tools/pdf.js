@@ -271,7 +271,7 @@ async function pageLines(pdfjs, page, { order = 'stream', fonts = false } = {}) 
   const infoOf = (name) => {
     if (fontInfo.has(name)) return fontInfo.get(name);
     const st = tc.styles?.[name]; let info = { mono: st?.fontFamily === 'monospace', bold: false, italic: false, name: null };
-    if (fonts) { try { const f = page.commonObjs.get(name); const nm = f?.name || ''; info = { mono: info.mono || !!f?.isMonospace, bold: !!f?.bold || !!f?.black || /bold|black|heavy|semibold|demi/i.test(nm), italic: !!f?.italic || /italic|oblique/i.test(nm), name: nm || null }; } catch { /* not resolved */ } }
+    if (fonts) { try { const f = page.commonObjs.get(name); const nm = f?.name || ''; info = { mono: info.mono || !!f?.isMonospace, bold: !!f?.bold || !!f?.black || /bold|black|heavy|semibold|demi|medi$/i.test(nm), italic: !!f?.italic || /italic|oblique/i.test(nm), name: nm || null }; } catch { /* not resolved */ } }
     fontInfo.set(name, info); return info;
   };
   const lines = []; let cur = null; let pendingSpace = false;
@@ -1712,8 +1712,24 @@ register({
   examples: ['pdf.encrypt input=doc.pdf userPassword=s3cret'],
   async run(a) {
     if (!a.userPassword && !a.ownerPassword) throw new Error('give userPassword (needed to open the file) and/or ownerPassword (restrictions only)');
-    const { doc } = await openLib(a.input, a.password);
+    const { L, doc } = await openLib(a.input, a.password);
     try { doc.encrypt({ userPassword: a.userPassword || '', ownerPassword: a.ownerPassword || a.userPassword, algorithm: a.algorithm, permissions: { printing: a.allowPrinting ? 'highResolution' : false, copying: a.allowCopying, modifying: a.allowModifying, annotating: a.allowModifying, fillingForms: a.allowModifying, contentAccessibility: true, documentAssembly: a.allowModifying } }); } catch (e) { throw new Error(`encryption failed: ${e.message}`); }
+    // pdf-lib encrypts stream data (object streams included) but leaves strings in objects written outside object
+    // streams — stream dictionaries, the catalog, page nodes — in clear text, which readers then "decrypt" into garbage.
+    // Encrypt those strings here so the file is conformant (ISO 32000 §7.6.2).
+    const ctx = doc.context; const sec = ctx.security; let strings = 0;
+    const hex = (u8) => { let s = ''; for (let i = 0; i < u8.length; i++) s += u8[i].toString(16).padStart(2, '0'); return s; };
+    const seal = (o, fn) => {
+      const one = (v, put) => { if (v instanceof L.PDFString || v instanceof L.PDFHexString) { put(L.PDFHexString.of(hex(fn(v.asBytes())))); strings++; } else if (v instanceof L.PDFDict || v instanceof L.PDFArray) seal(v, fn); };
+      if (o instanceof L.PDFDict) for (const [k, v] of o.entries()) one(v, (x) => o.set(k, x)); else if (o instanceof L.PDFArray) for (let i = 0; i < o.size(); i++) one(o.get(i), (x) => o.set(i, x));
+    };
+    if (sec?.getEncryptFn) for (const [ref, obj] of ctx.enumerateIndirectObjects()) {
+      if (ref === ctx.trailerInfo.Encrypt) continue;
+      const isStream = obj instanceof L.PDFStream;
+      if (!(isStream || obj instanceof L.PDFCatalog || obj instanceof L.PDFPageTree || obj instanceof L.PDFPageLeaf || ref.generationNumber !== 0)) continue;
+      if (!isStream && obj.get(L.PDFName.of('Type')) === L.PDFName.of('Sig')) continue;
+      seal(isStream ? obj.dict : obj, sec.getEncryptFn(ref.objectNumber, ref.generationNumber));
+    }
     const output = await savePdf(doc, vfs.out(a.output, a.input, 'encrypted', 'pdf'));
     return { output, algorithm: a.algorithm, needsPasswordToOpen: !!a.userPassword, permissions: { printing: a.allowPrinting, copying: a.allowCopying, modifying: a.allowModifying } };
   },

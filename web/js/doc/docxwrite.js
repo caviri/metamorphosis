@@ -3,8 +3,8 @@ import { M, vfs } from '../core.js';
 import { markedLib } from './html.js';
 import { fflate } from './formats.js';
 
-const x = (s) => String(s ?? '').replace(/[^\t\n\r -퟿-�\u{10000}-\u{10ffff}]/gu, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-const unent = (s) => String(s ?? '').replace(/&(amp|lt|gt|quot|#39|#x27|nbsp);/g, (m, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", '#x27': "'", nbsp: ' ' }[e]));
+const x = (s) => String(s ?? '').replace(/[^\t\n\r -\ud7ff\ue000-\ufffd\u{10000}-\u{10ffff}]/gu, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const unent = (s) => String(s ?? '').replace(/&(amp|lt|gt|quot|#39|#x27|nbsp);/g, (m, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", '#x27': "'", nbsp: '\u00a0' }[e]));
 const NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"';
 const HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
 
@@ -18,6 +18,7 @@ ${[[1, 32, 360], [2, 28, 280], [3, 26, 240], [4, 24, 200], [5, 22, 200], [6, 22,
 <w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:uiPriority w:val="34"/><w:qFormat/><w:pPr><w:spacing w:after="60"/><w:ind w:left="720"/><w:contextualSpacing/></w:pPr></w:style>
 <w:style w:type="paragraph" w:styleId="Quote"><w:name w:val="Quote"/><w:basedOn w:val="Normal"/><w:uiPriority w:val="29"/><w:qFormat/><w:pPr><w:pBdr><w:left w:val="single" w:sz="18" w:space="8" w:color="BBBBBB"/></w:pBdr><w:ind w:left="432"/></w:pPr><w:rPr><w:i/><w:iCs/><w:color w:val="404040"/></w:rPr></w:style>
 <w:style w:type="paragraph" w:styleId="SourceCode"><w:name w:val="Source Code"/><w:basedOn w:val="Normal"/><w:pPr><w:shd w:val="clear" w:color="auto" w:fill="F2F2F2"/><w:spacing w:after="0" w:line="240" w:lineRule="auto"/><w:contextualSpacing/></w:pPr><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/><w:noProof/><w:sz w:val="19"/><w:szCs w:val="19"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="HorizontalLine"><w:name w:val="Horizontal Line"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="auto"/></w:pBdr><w:spacing w:before="120" w:after="240"/></w:pPr></w:style>
 <w:style w:type="character" w:styleId="VerbatimChar"><w:name w:val="Verbatim Char"/><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/><w:noProof/><w:sz w:val="20"/><w:shd w:val="clear" w:color="auto" w:fill="F2F2F2"/></w:rPr></w:style>
 <w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:uiPriority w:val="99"/><w:unhideWhenUsed/><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr></w:style>
 <w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:basedOn w:val="TableNormal"/><w:uiPriority w:val="39"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:right w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:tblBorders></w:tblPr></w:style>
@@ -25,7 +26,7 @@ ${[[1, 32, 360], [2, 28, 280], [3, 26, 240], [4, 24, 200], [5, 22, 200], [6, 22,
 
 const lvlXml = (i, fmt, text, font) => `<w:lvl w:ilvl="${i}"><w:start w:val="1"/><w:numFmt w:val="${fmt}"/><w:lvlText w:val="${text}"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="${720 * (i + 1)}" w:hanging="360"/></w:pPr>${font ? `<w:rPr><w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:hint="default"/></w:rPr>` : ''}</w:lvl>`;
 function numberingXml(nums) {
-  const bullets = Array.from({ length: 9 }, (_, i) => lvlXml(i, 'bullet', ['•', 'o', '▪'][i % 3], ['Symbol', 'Courier New', 'Wingdings'][i % 3] === 'Symbol' ? null : (i % 3 === 1 ? 'Courier New' : null))).join('');
+  const bullets = Array.from({ length: 9 }, (_, i) => lvlXml(i, 'bullet', ['\u2022', 'o', '\u25aa'][i % 3], ['Symbol', 'Courier New', 'Wingdings'][i % 3] === 'Symbol' ? null : (i % 3 === 1 ? 'Courier New' : null))).join('');
   const decimals = Array.from({ length: 9 }, (_, i) => lvlXml(i, ['decimal', 'lowerLetter', 'lowerRoman'][i % 3], `%${i + 1}.`)).join('');
   return `${HEAD}<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="hybridMultilevel"/>${bullets}</w:abstractNum><w:abstractNum w:abstractNumId="2"><w:multiLevelType w:val="hybridMultilevel"/>${decimals}</w:abstractNum>${nums.map((n) => `<w:num w:numId="${n.id}"><w:abstractNumId w:val="${n.ordered ? 2 : 1}"/>${n.ordered ? Array.from({ length: 9 }, (_, i) => `<w:lvlOverride w:ilvl="${i}"><w:startOverride w:val="${i === n.level ? n.start : 1}"/></w:lvlOverride>`).join('') : ''}</w:num>`).join('')}</w:numbering>`;
 }
@@ -42,10 +43,10 @@ async function imageInfo(bytes, mime) {
   return out;
 }
 
-/** markdownToDocx(md, {title, author, mdPath, pageSize}) → {bytes, stats} */
+/** markdownToDocx(md, {title, author, mdPath, pageSize}) \u2192 {bytes, stats} */
 export async function markdownToDocx(md, opts = {}) {
   const [{ marked }, { zipSync, strToU8 }] = await Promise.all([markedLib(), fflate()]);
-  const tokens = marked.lexer(md.replace(/^﻿/, ''), { gfm: true });
+  const tokens = marked.lexer(md.replace(/^\ufeff/, ''), { gfm: true });
   const rels = []; const media = []; const nums = [{ id: 1, ordered: false }]; const stats = { headings: 0, paragraphs: 0, listItems: 0, tables: 0, codeBlocks: 0, links: 0, imagesEmbedded: 0, imagesLinked: 0, htmlBlocksFlattened: 0 };
   const warnings = []; let firstH1 = null; let drawingId = 0; const bookmarks = new Set();
   // Word bookmark names: letters/digits/underscore, start with a letter, ≤ 40 chars. "#my-heading" links use the same mapping.
@@ -81,7 +82,7 @@ export async function markdownToDocx(md, opts = {}) {
     let out = '';
     for (const t of toks || []) {
       switch (t.type) {
-        case 'text': case 'escape': out += t.tokens ? await inline(t.tokens, f) : run(unent(t.text), f); break;
+        case 'text': case 'escape': out += t.tokens ? await inline(t.tokens, f) : run(unent(t.text).replace(/[ \t]*\n[ \t]*/g, ' '), f); break;
         case 'strong': out += await inline(t.tokens, { ...f, bold: true }); break;
         case 'em': out += await inline(t.tokens, { ...f, italic: true }); break;
         case 'del': out += await inline(t.tokens, { ...f, strike: true }); break;
@@ -112,7 +113,7 @@ export async function markdownToDocx(md, opts = {}) {
         case 'text': stats.paragraphs++; out += para(t.tokens ? await inline(t.tokens) : run(unent(t.text), {}), pStyle + (ctx.ind ? `<w:ind w:left="${ctx.ind}"/>` : '')); break;
         case 'code': { stats.codeBlocks++; for (const line of t.text.split('\n')) out += para(run(line, {}), `<w:pStyle w:val="SourceCode"/>${ctx.ind ? `<w:ind w:left="${ctx.ind}"/>` : ''}`); out += para('', '<w:spacing w:after="0" w:line="120" w:lineRule="exact"/>'); break; }
         case 'blockquote': out += await blocks(t.tokens, { ...ctx, quote: true }); break;
-        case 'hr': out += para('', '<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="auto"/></w:pBdr>'); break;
+        case 'hr': out += para('', '<w:pStyle w:val="HorizontalLine"/>'); break;
         case 'list': out += await list(t, ctx.depth ?? 0, ctx); break;
         case 'table': out += await table(t); break;
         case 'html': { const s = t.text.replace(/<!--[\s\S]*?-->/g, '').replace(/<(script|style)[\s\S]*?<\/\1>/gi, '').replace(/<[^>]*>/g, '').trim(); if (s) { stats.htmlBlocksFlattened++; for (const p of unent(s).split(/\n{2,}/)) out += para(run(p.trim(), {}), pStyle); } break; }
@@ -128,7 +129,7 @@ export async function markdownToDocx(md, opts = {}) {
     for (const item of t.items) {
       stats.listItems++; let first = true;
       const numPr = `<w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="${numId}"/></w:numPr>`;
-      const box = item.task ? run(item.checked ? '☑ ' : '☐ ', {}) : '';
+      const box = item.task ? run(item.checked ? '\u2611 ' : '\u2610 ', {}) : '';
       for (const b of item.tokens) {
         if (b.type === 'space' || b.type === 'checkbox') continue;
         if (b.type === 'list') { if (first) { out += para(box, numPr); first = false; } out += await list(b, depth + 1, ctx); continue; }

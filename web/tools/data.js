@@ -269,7 +269,9 @@ register({
   examples: ['data.unflatten input=users.csv'],
   async run(a) {
     const f = await F(); const s = await S(); const doc = await f.loadDoc(a.input, srcOpts(a));
-    const strip = (o) => (a.keepNulls ? o : Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null)));
+    const tabular = !f.isDocFormat(doc.format) && doc.format !== 'jsonl';
+    const cell = (v) => { if (tabular && typeof v === 'string' && /^[[{]/.test(v)) { try { return JSON.parse(v); } catch { /* plain text */ } } return v; }; // csv cells holding JSON (written by data.flatten) come back as values
+    const strip = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => a.keepNulls || v !== null).map(([k, v]) => [k, cell(v)]));
     const value = Array.isArray(doc.value) ? doc.value.map((r) => s.unflatten(strip(r), { sep: a.separator })) : s.unflatten(strip(doc.value), { sep: a.separator });
     return { output: await vfs.write(vfs.out(a.output, a.input, 'nested', 'json'), JSON.stringify(value, null, 2) + '\n'), records: Array.isArray(value) ? value.length : 1 };
   },
@@ -462,7 +464,7 @@ async function openArchive(path, maxBytes) {
   }
   if (isGz(b)) {
     try { b = await ar.guardedInflate(b, maxBytes, 'gunzip'); } catch (e) { if (e instanceof ar.LimitError) throw new Error(`refusing to decompress: the gzip stream expands past maxBytes=${maxBytes} (possible decompression bomb) — raise maxBytes if you trust the file`); throw new Error(`gzip: ${e.message}`); }
-    if (!ar.isTar(b)) { const name = vfs.stemOf(path) + (/\.t?gz$/i.test(path) && vfs.extOf(vfs.stemOf(path)) === '' && !/\./.test(vfs.stemOf(path)) ? '' : ''); const data = b; return { format: 'gzip', entries: [{ name: path.replace(/^.*\//, '').replace(/\.gz$/i, '') || name, dir: false, size: data.length, compressedSize: vfs.stat(path).bytes, type: 'file' }], compressedBytes: vfs.stat(path).bytes, read: async () => data }; }
+    if (!ar.isTar(b)) { const data = b; return { format: 'gzip', entries: [{ name: path.replace(/^.*\//, '').replace(/\.gz$/i, '') || 'data', dir: false, size: data.length, compressedSize: vfs.stat(path).bytes, type: 'file' }], compressedBytes: vfs.stat(path).bytes, read: async () => data }; }
     format = 'tar.gz';
   } else if (ar.isTar(b)) format = 'tar';
   else throw new Error(`"${path}" is not a zip, tar, tar.gz or gzip file (use file.identify to see what it is; 7z, rar, xz, bzip2 and zstd are not supported)`);
@@ -478,8 +480,8 @@ register({
     const ar = await A(); const arc = await openArchive(a.input, a.maxBytes); const match = ar.globMatcher(a.glob);
     const all = arc.entries.filter((e) => match(e.name.replace(/\\/g, '/').replace(/\/$/, '')));
     const view = all.map((e) => { const sp = ar.safePath(e.name); return { name: e.name, ...(e.dir ? { dir: true } : { size: e.size }), ...(e.compressedSize !== undefined && !e.dir ? { compressedSize: e.compressedSize } : {}), ...(e.method && e.method !== 'deflate' && !e.dir ? { method: e.method } : {}), ...(e.modified ? { modified: e.modified } : {}), ...(e.encrypted ? { encrypted: true } : {}), ...(e.symlink || e.type === 'symlink' ? { symlink: true } : {}), ...(e.type && !['file', 'dir', 'symlink'].includes(e.type) ? { type: e.type } : {}), ...(sp.reason ? { unsafe: sp.reason } : {}) }; });
-    const files = all.filter((e) => !e.dir); const total = files.reduce((s, e) => s + e.size, 0);
-    const res = { format: arc.format, entries: all.length, files: files.length, directories: all.length - files.length, totalBytes: total, archiveBytes: arc.compressedBytes, ratio: arc.compressedBytes ? round(total / arc.compressedBytes, 4) : null, unsafeNames: view.filter((v) => v.unsafe).length, encrypted: view.filter((v) => v.encrypted).length, list: view.slice(0, a.limit), truncated: view.length > a.limit };
+    const files = all.filter((e) => !e.dir && (e.type === undefined || e.type === 'file')); const total = files.reduce((s, e) => s + e.size, 0);
+    const res = { format: arc.format, entries: all.length, files: files.length, directories: all.filter((e) => e.dir).length, totalBytes: total, archiveBytes: arc.compressedBytes, ratio: arc.compressedBytes ? round(total / arc.compressedBytes, 4) : null, unsafeNames: view.filter((v) => v.unsafe).length, encrypted: view.filter((v) => v.encrypted).length, list: view.slice(0, a.limit), truncated: view.length > a.limit };
     if (a.output) res.output = await vfs.write(a.output, JSON.stringify(view, null, 1) + '\n');
     return res;
   },
@@ -629,10 +631,10 @@ register({
   schema: { properties: { version: { type: 'integer', enum: [4, 7], default: 4, description: '4 = random, 7 = time-ordered' }, count: { type: 'integer', default: 1, minimum: 1, maximum: 100, description: 'How many' }, uppercase: { type: 'boolean', default: false, description: 'Upper-case hex' } } },
   examples: ['hash.uuid', 'hash.uuid version=7 count=5'],
   run(a) {
-    const uuids = []; let last = 0;
+    const uuids = []; let last = 0; const seq0 = crypto.getRandomValues(new Uint16Array(1))[0] & 0x7ff; // v7: 12-bit counter in rand_a keeps one batch ordered
     for (let i = 0; i < a.count; i++) {
       const b = crypto.getRandomValues(new Uint8Array(16));
-      if (a.version === 7) { let ms = Date.now(); if (ms <= last) ms = last; last = ms; b[0] = Math.floor(ms / 2 ** 40) & 255; b[1] = Math.floor(ms / 2 ** 32) & 255; b[2] = (ms >>> 24) & 255; b[3] = (ms >>> 16) & 255; b[4] = (ms >>> 8) & 255; b[5] = ms & 255; if (i) { b[6] = (i >> 8) & 15; b[7] = i & 255; } }
+      if (a.version === 7) { let ms = Date.now(); if (ms <= last) ms = last; last = ms; b[0] = Math.floor(ms / 2 ** 40) & 255; b[1] = Math.floor(ms / 2 ** 32) & 255; b[2] = (ms >>> 24) & 255; b[3] = (ms >>> 16) & 255; b[4] = (ms >>> 8) & 255; b[5] = ms & 255; const seq = seq0 + i; b[6] = (seq >> 8) & 15; b[7] = seq & 255; }
       b[6] = (b[6] & 0x0f) | (a.version << 4); b[8] = (b[8] & 0x3f) | 0x80;
       const h = hexOf(b); const u = `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`; uuids.push(a.uppercase ? u.toUpperCase() : u);
     }
@@ -804,25 +806,27 @@ register({
 });
 register({
   name: 'file.entropy',
-  description: 'Shannon entropy of a file in bits per byte (0 = constant, ~4–5 = text/code, >7.5 = compressed, >7.95 = encrypted or random), overall and per block, with the high-entropy regions listed by offset — the standard way to spot packed, compressed or encrypted sections inside a binary. Also renders a PNG strip (entropy against file offset) for a vision model to look at. Returns the numbers, a 32-point profile and the PNG.',
-  schema: { properties: { ...FILE_IN, blockSize: { type: 'integer', minimum: 16, maximum: 16777216, description: 'Bytes per block (default: chosen so the file has at most ~1024 blocks, minimum 256)' }, threshold: { type: 'number', default: 7.5, minimum: 0, maximum: 8, description: 'Blocks at or above this entropy are reported as high-entropy regions' }, image: { type: 'boolean', default: true, description: 'Render the entropy strip PNG' }, output: { type: 'string', description: 'VFS path of the PNG (default: <input>.entropy.png)' } }, required: ['input'] },
+  description: 'Shannon entropy of a file in bits per byte (0 = constant, ~4–5 = text/code, >7.5 = compressed, >7.95 = encrypted or random), overall and per block, with the high-entropy regions listed by offset (runs of blocks at or above the threshold, which is lowered by the small-sample bias of the block size and reported as effectiveThreshold) — the standard way to spot packed, compressed or encrypted sections inside a binary. Also renders a PNG strip (entropy against file offset) for a vision model to look at. Returns the numbers, a 32-point profile and the PNG.',
+  schema: { properties: { ...FILE_IN, blockSize: { type: 'integer', minimum: 16, maximum: 16777216, description: 'Bytes per block (default: 1024, or larger so the file has at most ~1024 blocks; 256 for files under 16 KiB)' }, threshold: { type: 'number', default: 7.5, minimum: 0, maximum: 8, description: 'Blocks at or above this entropy are reported as high-entropy regions' }, image: { type: 'boolean', default: true, description: 'Render the entropy strip PNG' }, output: { type: 'string', description: 'VFS path of the PNG (default: <input>.entropy.png)' } }, required: ['input'] },
   examples: ['file.entropy input=firmware.bin'],
   async run(a) {
     const b = vfs.read(a.input); if (!b.length) throw new Error('file is empty');
-    const bs = a.blockSize || Math.max(256, 2 ** Math.ceil(Math.log2(b.length / 1024)));
+    const bs = a.blockSize || (b.length < 16384 ? 256 : Math.max(1024, 2 ** Math.ceil(Math.log2(b.length / 1024))));
     const n = Math.ceil(b.length / bs); const blocks = new Float32Array(n);
     for (let i = 0; i < n; i++) blocks[i] = shannon(b, i * bs, Math.min(b.length, (i + 1) * bs));
     const overall = shannon(b, 0, b.length); let min = 8; let max = 0; let sum = 0; for (const e of blocks) { if (e < min) min = e; if (e > max) max = e; sum += e; }
-    // a short final block cannot reach high entropy; judge it against its own ceiling
-    const cap = (i) => Math.min(8, Math.log2(Math.max(1, Math.min(bs, b.length - i * bs))));
+    // A block of n random bytes cannot show 8 bits: the plug-in estimate is biased low by about 255 / (2 n ln 2)
+    // (0.72 bits at n=256, 0.18 at n=1024). The threshold is lowered by that bias so small blocks are judged fairly.
+    const bias = (len) => 255 / (2 * len * Math.LN2);
+    const thr = Math.max(0, a.threshold - bias(bs));
     const regions = []; let cur = null;
-    for (let i = 0; i < n; i++) { const hi = blocks[i] >= Math.min(a.threshold, cap(i) - 0.3) && bs >= 256; if (hi) { if (!cur) cur = { offset: i * bs, length: 0, sum: 0, k: 0 }; cur.length = Math.min(b.length, (i + 1) * bs) - cur.offset; cur.sum += blocks[i]; cur.k++; } else if (cur) { regions.push(cur); cur = null; } }
+    for (let i = 0; i < n; i++) { const len = Math.min(bs, b.length - i * bs); const hi = len >= 256 && blocks[i] >= a.threshold - bias(len); if (hi) { if (!cur) cur = { offset: i * bs, length: 0, sum: 0, k: 0 }; cur.length = Math.min(b.length, (i + 1) * bs) - cur.offset; cur.sum += blocks[i]; cur.k++; } else if (cur) { regions.push(cur); cur = null; } }
     if (cur) regions.push(cur);
     const hiBytes = regions.reduce((s, r) => s + r.length, 0);
     const assess = overall > 7.95 ? 'near-maximal: encrypted or random data (or very well compressed)' : overall > 7.5 ? 'high: compressed or encrypted' : overall > 6 ? 'medium-high: mixed binary, machine code or partly compressed' : overall > 3.5 ? 'medium: text, source code or structured data' : overall > 1 ? 'low: highly repetitive data' : 'very low: almost constant (padding, zeros)';
     const prof = Array.from({ length: Math.min(32, n) }, (_, k) => { const i0 = Math.floor((k * n) / Math.min(32, n)); const i1 = Math.max(i0 + 1, Math.floor(((k + 1) * n) / Math.min(32, n))); let s = 0; for (let i = i0; i < i1; i++) s += blocks[i]; return round(s / (i1 - i0), 3); });
-    const res = { bytes: b.length, entropy: round(overall, 5), assessment: assess, blockSize: bs, blocks: n, blockMin: round(min, 4), blockMax: round(max, 4), blockMean: round(sum / n, 4), threshold: a.threshold, highEntropyBytes: hiBytes, highEntropyFraction: round(hiBytes / b.length, 4), highEntropyRegions: regions.slice(0, 20).map((r) => ({ offset: r.offset, hexOffset: `0x${r.offset.toString(16)}`, length: r.length, meanEntropy: round(r.sum / r.k, 3) })), regionsTruncated: regions.length > 20, profile: prof };
-    if (a.image) { const d = await D(); const { saveCanvas } = await IMG(); res.output = await saveCanvas(d.entropyStrip({ blocks, blockSize: bs, total: b.length, title: `${vfs.stat(a.input).path} — entropy ${overall.toFixed(3)} bits/byte over ${M.human(b.length)}` }), vfs.out(a.output, a.input, 'entropy', 'png')); }
+    const res = { bytes: b.length, entropy: round(overall, 5), assessment: assess, blockSize: bs, blocks: n, blockMin: round(min, 4), blockMax: round(max, 4), blockMean: round(sum / n, 4), threshold: a.threshold, effectiveThreshold: round(thr, 4), highEntropyBytes: hiBytes, highEntropyFraction: round(hiBytes / b.length, 4), highEntropyRegions: regions.slice(0, 20).map((r) => ({ offset: r.offset, hexOffset: `0x${r.offset.toString(16)}`, length: r.length, meanEntropy: round(r.sum / r.k, 3) })), regionsTruncated: regions.length > 20, profile: prof };
+    if (a.image) { const d = await D(); const { saveCanvas } = await IMG(); res.output = await saveCanvas(d.entropyStrip({ blocks, blockSize: bs, total: b.length, threshold: thr, title: `${vfs.stat(a.input).path} — entropy ${overall.toFixed(3)} bits/byte over ${M.human(b.length)}` }), vfs.out(a.output, a.input, 'entropy', 'png')); }
     return res;
   },
 });

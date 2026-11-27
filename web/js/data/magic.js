@@ -103,7 +103,7 @@ function zipKind(b) {
   let mimetype = null;
   while (p + 30 <= lim && at(b, p, [0x50, 0x4b, 0x03, 0x04]) && names.length < 60) {
     const flags = u16(b, p + 6); const csize = u32(b, p + 18); const nl = u16(b, p + 26); const el = u16(b, p + 28);
-    const name = asc(b, p + 30, nl); names.push(name);
+    const name = new TextDecoder().decode(b.subarray(p + 30, Math.min(b.length, p + 30 + nl))); names.push(name);
     if (name === 'mimetype' && u16(b, p + 8) === 0) mimetype = asc(b, p + 30 + nl + el, Math.min(csize, 80));
     if (flags & 8) break; // sizes unknown (data descriptor) — stop walking
     p += 30 + nl + el + csize;
@@ -169,6 +169,8 @@ function textKind(b) {
 /** identify(bytes) → {format, mime, extensions, category, description, confidence, details?} */
 export function identify(b) {
   if (!b.length) return R('empty', 'application/x-empty', [], 'empty', 'Empty file (0 bytes)', 1);
+  // text with a byte-order mark first (FF FE would otherwise look like an MPEG audio frame sync)
+  if (at(b, 0, [0xef, 0xbb, 0xbf]) || ((at(b, 0, [0xff, 0xfe]) || at(b, 0, [0xfe, 0xff])) && b.length >= 4 && b.length % 2 === 0)) { const t = textKind(b); if (t && !/[\u0000-\u0008\u000e-\u001f]/.test(new TextDecoder(at(b, 0, [0xef]) ? 'utf-8' : at(b, 0, [0xff]) ? 'utf-16le' : 'utf-16be').decode(b.subarray(0, 512)).slice(1))) return t; }
   // containers needing a closer look first
   if (at(b, 0, 'RIFF') || at(b, 0, 'RIFX')) {
     const k = asc(b, 8, 4);

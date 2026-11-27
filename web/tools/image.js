@@ -773,7 +773,7 @@ register({
 
 register({
   name: 'image.edges', gpu: true,
-  description: 'Edge detection on Rec.709 luma; output is a gray image (alpha 255). sobel / scharr / prewitt give gradient magnitude sqrt(gx²+gy²) (scharr is rotation-accurate and normalised here to sobel\'s scale); laplacian (4-neighbour) and laplacian8 give |second derivative| (sensitive to noise and fine detail). canny produces thin, one-pixel, binary edges: gaussian smoothing (sigma), gradient, non-maximum suppression and hysteresis between low/high thresholds — thresholds are on a scale where a full black→white step is 255, and are chosen automatically when omitted (high = Otsu's threshold of the gradient magnitudes, low = 0.4 × high). Use sobel to see edge strength, canny for clean contours to feed analysis.lines.',
+  description: 'Edge detection on Rec.709 luma; output is a gray image (alpha 255). sobel / scharr / prewitt give gradient magnitude sqrt(gx²+gy²) (scharr is rotation-accurate and normalised here to sobel\'s scale); laplacian (4-neighbour) and laplacian8 give |second derivative| (sensitive to noise and fine detail). canny produces thin, one-pixel, binary edges: gaussian smoothing (sigma), gradient, non-maximum suppression and hysteresis between low/high thresholds — thresholds are on a scale where a full black→white step is 255, and are chosen automatically when omitted (high = Otsu threshold of the gradient magnitudes, low = 0.4 × high). Use sobel to see edge strength, canny for clean contours to feed analysis.lines.',
   schema: {
     properties: {
       input: IN,

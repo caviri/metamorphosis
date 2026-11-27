@@ -11,14 +11,14 @@ export function fmtTime(ms, sep = ',', short = false) {
   return `${p(h)}:${p(m)}:${p(s)}${sep}${p(f, 3)}`;
 }
 export function sniffSubs(text) {
-  const head = text.replace(/^﻿/, '').slice(0, 2000);
+  const head = text.replace(/^\ufeff/, '').slice(0, 2000);
   if (/^WEBVTT(?:[ \t\r\n]|$)/.test(head)) return 'vtt';
   if (/^\s*\d+\s*\r?\n\s*\d{1,3}:\d{2}:\d{2}[,.]\d{1,3}\s*-->/.test(head) || /^\s*\d{1,3}:\d{2}:\d{2},\d{1,3}\s*-->/.test(head)) return 'srt';
   return null;
 }
-/** → {format, cues:[{start,end,text,id?,settings?}], header?, notes, skipped} — times in ms; text keeps inline tags */
+/** \u2192 {format, cues:[{start,end,text,id?,settings?}], header?, notes, skipped} \u2014 times in ms; text keeps inline tags */
 export function parseSubs(text) {
-  text = text.replace(/^﻿/, '').replace(/\r\n?/g, '\n');
+  text = text.replace(/^\ufeff/, '').replace(/\r\n?/g, '\n');
   const format = /^WEBVTT/.test(text) ? 'vtt' : 'srt';
   const blocks = text.split(/\n{2,}/); const cues = []; let skipped = 0; let notes = 0; let header = null;
   for (let bi = 0; bi < blocks.length; bi++) {
@@ -64,10 +64,10 @@ export function toTranscript(cues, { timestamps = 'collapse', gapMs = 2500, maxC
     if (lines.length) clean.push({ start: c.start, end: c.end, text: lines.join(' ') });
   }
   const stamp = (t) => (markdown ? `**[${t}]**` : `[${t}]`);
-  if (timestamps === 'keep') return clean.map((c) => `${stamp(`${fmtTime(c.start, '.')} → ${fmtTime(c.end, '.')}`)} ${c.text}`).join(markdown ? '\n\n' : '\n') + (clean.length ? '\n' : '');
+  if (timestamps === 'keep') return clean.map((c) => `${stamp(`${fmtTime(c.start, '.')} \u2192 ${fmtTime(c.end, '.')}`)} ${c.text}`).join(markdown ? '\n\n' : '\n') + (clean.length ? '\n' : '');
   const paras = []; let cur = null;
   for (const c of clean) {
-    if (!cur || c.start - cur.end > gapMs || (cur.text.length > maxChars && /[.!?。！？…]["')\]]?$/.test(cur.text)) || cur.text.length > maxChars * 2) { cur = { start: c.start, end: c.end, text: c.text }; paras.push(cur); } else { cur.text += ' ' + c.text; cur.end = c.end; }
+    if (!cur || c.start - cur.end > gapMs || (cur.text.length > maxChars && /[.!?\u3002\uff01\uff1f\u2026]["')\]]?$/.test(cur.text)) || cur.text.length > maxChars * 2) { cur = { start: c.start, end: c.end, text: c.text }; paras.push(cur); } else { cur.text += ' ' + c.text; cur.end = c.end; }
   }
   return paras.map((p) => (timestamps === 'none' ? p.text : `${stamp(fmtTime(p.start, '.', true))} ${p.text}`)).join('\n\n') + (paras.length ? '\n' : '');
 }

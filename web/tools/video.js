@@ -5,7 +5,7 @@
 // Every result says which backend ran (`backend`) and, when knowable, whether hardware acceleration was used.
 import { M, vfs, register } from '../js/core.js';
 import { canvasOf, canvasBytes, decode, toCanvas } from '../js/img.js';
-import { mb, openInput, ensureAudioEncoder, audioEncoderKind, hasWebCodecs } from '../js/media/mb.js';
+import { mb, openInput, ensureAudioEncoder, audioEncoderKind, hasWebCodecs, wasmUse } from '../js/media/mb.js';
 import { ffJob, ffLoad, ffLoaded, FF_URLS, FF_MAX_INPUT } from '../js/media/ff.js';
 
 // ─────────────────────────────────────────────────────────── tables ──
@@ -47,6 +47,8 @@ const AUDIO_FORMATS = {
 };
 const RATES = { opus: [8000, 12000, 16000, 24000, 48000], mp3: [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000], aac: [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000] };
 const MAXCH = { mp3: 2, opus: 2, vorbis: 8, aac: 6, flac: 8, pcm: 8 };
+const DEF_ABR = { mp3: [64000, 128000], aac: [96000, 128000], opus: [48000, 96000], vorbis: [64000, 112000] };   // default bit/s for [mono, stereo]
+const defAbr = (codec, ch) => (DEF_ABR[codec] ? DEF_ABR[codec][Math.min(2, Math.max(1, ch || 2)) - 1] : undefined);
 
 // ────────────────────────────────────────────────────────── helpers ──
 const r3 = (x) => (typeof x === 'number' && Number.isFinite(x) ? Math.round(x * 1000) / 1000 : null);
@@ -82,12 +84,15 @@ function planSize(src, p) {
 const containerOf = (path, fallback) => { const e = vfs.extOf(path || ''); return e === 'm4v' ? 'mp4' : e === 'mpg' || e === 'mpeg' ? null : CONTAINERS[e] ? e : fallback; };
 
 // passive tap on VideoEncoder.configure: tells us whether a conversion really re-encoded video (vs. copied packets)
-const tap = { on: false, rec: 0, video: [] };
+const tap = { on: false, rec: 0, video: [], audio: 0 };
 function tapEncoders() {
   if (tap.on || typeof VideoEncoder === 'undefined') return;
   tap.on = true;
   const orig = VideoEncoder.prototype.configure;
   VideoEncoder.prototype.configure = function (cfg) { if (tap.rec) tap.video.push({ codec: cfg.codec, width: cfg.width, height: cfg.height, hw: cfg.hardwareAcceleration || 'no-preference' }); return orig.call(this, cfg); };
+  if (typeof AudioEncoder === 'undefined') return;
+  const origA = AudioEncoder.prototype.configure;
+  AudioEncoder.prototype.configure = function (cfg) { if (tap.rec) tap.audio++; return origA.call(this, cfg); };
 }
 const HW = { auto: 'no-preference', hardware: 'prefer-hardware', software: 'prefer-software' };
 async function hwEncodable(lib, codec, width, height) { try { return await lib.canEncodeVideo(codec, { width, height, hardwareAcceleration: 'prefer-hardware' }); } catch { return false; } }
@@ -243,12 +248,13 @@ async function convertWC(p, ctx, src) {
     if (!vcodec) throw new Error(p.vcodec ? `this browser cannot encode ${p.vcodec} at ${size.width}×${size.height} into .${p.format} via WebCodecs` : `no WebCodecs video encoder fits .${p.format} in this browser`);
   }
   // audio plan
-  let acodec = null, sampleRate = p.sampleRate, channels = p.channels, audioCopy = false;
+  let acodec = null, sampleRate = p.sampleRate, channels = p.channels, audioCopy = false, abitrate = p.abitrate;
   if (sa) {
     const supported = fmtProbe.getSupportedAudioCodecs();
     const srcMb = A2MB[sa.codec] || (sa.codec.startsWith('pcm_') ? sa.codec.replace('pcm_', 'pcm-') : null);
     const aTransform = !!(p.abitrate || p.sampleRate || p.channels) || p.copy === 'never' || (p.format === 'wav' && srcMb !== 'pcm-s16');
-    const want = p.acodec ? [A2MB[p.acodec]] : [...(!aTransform && srcMb ? [srcMb] : []), ...(cont.a || cont.codecs).map((c) => A2MB[c])];
+    const list = cont.a || cont.codecs, srcU = sa.codec.replace(/^pcm_.*/, 'pcm');
+    const want = p.acodec ? [A2MB[p.acodec]] : [...(!aTransform && srcMb && list.includes(srcU) ? [srcMb] : []), ...list.map((c) => A2MB[c])];
     for (const c of want) {
       if (!c || !supported.includes(c)) continue;
       if (!aTransform && !p.acodec && srcMb === c) { acodec = c; break; }
@@ -261,6 +267,12 @@ async function convertWC(p, ctx, src) {
       if (RATES[u]) { const r = sampleRate || sa.sampleRate; if (!RATES[u].includes(r)) sampleRate = RATES[u].find((x) => x >= r) || RATES[u][RATES[u].length - 1]; }
       if ((channels || sa.channels) > (MAXCH[u] || 8)) channels = MAXCH[u];
     }
+    abitrate ||= copying ? Math.min(320000, Math.max(defAbr(u, channels || sa.channels) || 0, sa.bitrate || 0)) || undefined : defAbr(u, channels || sa.channels);   // used only if Mediabunny has to re-encode after all
+    // the exact configuration must be encodable (also when "copying" a trimmed track: the cut may force a re-encode of its edges)
+    if (!acodec.startsWith('pcm-') && (!copying || p.start || p.end != null)) {
+      const kind = await ensureAudioEncoder(acodec, { numberOfChannels: channels || sa.channels, sampleRate: sampleRate || sa.sampleRate, ...(abitrate ? { bitrate: abitrate } : {}) }).catch(() => null);
+      if (!kind && !copying) throw new Error(`this browser cannot encode ${u} audio at ${sampleRate || sa.sampleRate} Hz, ${channels || sa.channels} ch${abitrate ? `, ${Math.round(abitrate / 1000)} kbit/s` : ''} via WebCodecs`);
+    }
   }
   const trim = (p.start || p.end != null) ? { ...(p.start ? { start: p.start } : {}), ...(p.end != null ? { end: p.end } : {}) } : undefined;
   const hwEnc = sv && vcodec ? await hwEncodable(lib, vcodec, size.width, size.height) : false;
@@ -269,7 +281,7 @@ async function convertWC(p, ctx, src) {
   for (const mode of modes) {
     const input = await openInput(p.input);
     const output = new lib.Output({ format: mbFormat(lib, p.format, table), target: new lib.BufferTarget() });
-    tap.video = []; tap.rec++;
+    tap.video = []; tap.audio = 0; tap.rec++; const wasm0 = wasmUse.n;
     try {
       const video = !sv ? { discard: true } : {
         codec: vcodec, hardwareAcceleration: mode, ...(vTransform ? { forceTranscode: true } : {}),
@@ -279,7 +291,7 @@ async function convertWC(p, ctx, src) {
         ...(p.fps ? { frameRate: p.fps } : {}),
         ...(p.vbitrate || p.quality ? { quality: mbQuality(lib, p.vbitrate, p.quality) } : {}),
       };
-      const audio = !sa ? { discard: true } : { codec: acodec, ...(p.copy === 'never' ? { forceTranscode: true } : {}), ...(p.abitrate ? { quality: mbQuality(lib, p.abitrate) } : {}), ...(sampleRate ? { sampleRate } : {}), ...(channels ? { numberOfChannels: channels } : {}) };
+      const audio = !sa ? { discard: true } : { codec: acodec, ...(p.copy === 'never' ? { forceTranscode: true } : {}), ...(abitrate && !acodec.startsWith('pcm-') ? { quality: mbQuality(lib, abitrate) } : {}), ...(sampleRate ? { sampleRate } : {}), ...(channels ? { numberOfChannels: channels } : {}) };
       const copy = p.copy === 'never' ? false : p.copy === 'forced' ? { mode: 'forced', shiftTolerance: Infinity, boundaryPolicy: 'expand' } : {};
       const conv = await lib.Conversion.init({ input, output, video, audio, trim, copy, tracks: 'primary', showWarnings: false });
       const lost = conv.discardedTracks.filter((d) => d.reason !== 'discarded_by_user' && d.track.type !== 'subtitle');
@@ -294,7 +306,11 @@ async function convertWC(p, ctx, src) {
         info: {
           backend: 'webcodecs', hardwareAccelerated: sv ? (encoded ? hwVerdict(mode, hwEnc) : false) : false,
           ...(sv ? { videoCodec: uname(vcodec), videoReencoded: encoded } : {}),
-          ...(sa ? { audioCodec: uname(acodec).replace(/^pcm_.*/, 'pcm'), audioReencoded: !audioCopy, ...(audioCopy || acodec.startsWith('pcm-') ? {} : { audioEncoder: audioEncoderKind(acodec) }) } : {}),
+          ...(sa ? (() => {
+            const wasm = audioEncoderKind(acodec) === 'wasm';
+            const re = acodec.startsWith('pcm-') ? !audioCopy : tap.audio > 0 || wasmUse.n > wasm0;      // observed: did an audio encoder start?
+            return { audioCodec: uname(acodec).replace(/^pcm_.*/, 'pcm'), audioReencoded: re, ...(re && !acodec.startsWith('pcm-') ? { audioEncoder: wasm ? 'wasm' : 'webcodecs' } : {}) };
+          })() : {}),
           ...(sv && encoded && hwVerdict(mode, hwEnc) === null ? { hardwareNote: 'a hardware encoder exists and the browser chose between it and software (WebCodecs does not report which); pass hardware=hardware or hardware=software to force one' } : {}),
         },
       };
@@ -343,7 +359,8 @@ function ffCodecArgs(p, cont, sv, sa) {
     acodec = p.acodec || (cont.a || cont.codecs)[0];
     if (!FF_A[acodec]) throw new Error(`unknown audio codec ${acodec}`);
     args.push('-c:a', ...FF_A[acodec]);
-    if (p.abitrate && !['flac', 'pcm'].includes(acodec)) args.push('-b:a', String(p.abitrate));
+    const abr = p.abitrate || defAbr(acodec, Math.min(p.channels || sa.channels || 2, MAXCH[acodec] || 8));
+    if (abr && !['flac', 'pcm'].includes(acodec)) args.push('-b:a', String(abr));
     let sr = p.sampleRate; const u = acodec;
     if (RATES[u] && !RATES[u].includes(sr || sa.sampleRate)) sr = RATES[u].find((x) => x >= (sr || sa.sampleRate)) || RATES[u][RATES[u].length - 1];
     if (sr) args.push('-ar', String(sr));
@@ -429,7 +446,7 @@ async function pipelineWC(clips, o, ctx) {
   const mode = o.hardware === 'hardware' ? 'prefer-hardware' : o.hardware === 'software' ? 'prefer-software' : hwEnc && !o.noHw ? 'prefer-hardware' : 'no-preference';
   const total = clips.reduce((s, c) => s + ((c.end ?? c.info.duration) - (c.start || 0)) / (c.speed || 1), 0);
   const output = new lib.Output({ format: mbFormat(lib, o.format), target: new lib.BufferTarget() });
-  const vsrc = new lib.VideoSampleSource({ codec: vcodec, quality: mbQuality(lib, o.vbitrate, o.quality || 'medium'), hardwareAcceleration: mode, transform: { width: o.width, height: o.height, fit: 'contain', ...(o.fps ? { frameRate: o.fps } : {}) } });
+  const vsrc = new lib.VideoSampleSource({ codec: vcodec, quality: mbQuality(lib, o.vbitrate, o.quality || 'medium'), hardwareAcceleration: mode, ...(o.fps ? { transform: { frameRate: o.fps } } : {}) });
   output.addVideoTrack(vsrc);
   let asrc = null;
   if (acodec) { asrc = new lib.AudioSampleSource({ codec: acodec, ...(acodec.startsWith('pcm-') ? {} : { quality: mbQuality(lib, o.abitrate, 'medium') }), transform: { numberOfChannels: channels, sampleRate } }); output.addAudioTrack(asrc); }
@@ -449,8 +466,13 @@ async function pipelineWC(clips, o, ctx) {
         for await (const s of new lib.VideoSampleSink(vt).samples(t0, t1)) {
           const ts = offset + Math.max(0, s.timestamp - t0) / speed;
           if (ts - lastTs < minGap || s.timestamp >= t1) { s.close(); continue; }
-          lastTs = ts; s.setTimestamp(ts); s.setDuration(Math.max(1e-3, minGap ? Math.max(minGap, s.duration / speed) : s.duration / speed));
-          await vsrc.add(s); s.close();
+          lastTs = ts;
+          let f = s;
+          try {
+            if (s.displayWidth !== o.width || s.displayHeight !== o.height || s.rotation) f = await s.transform({ width: o.width, height: o.height, fit: 'contain' });   // every clip onto one canvas, rotation baked in
+            f.setTimestamp(ts); f.setDuration(Math.max(1e-3, minGap ? Math.max(minGap, s.duration / speed) : s.duration / speed));
+            await vsrc.add(f);
+          } finally { if (f !== s) f.close(); s.close(); }
           const now = performance.now(); if (now - lastP > 200) { lastP = now; ctx.progress(Math.min(0.99, ts / total), 'webcodecs'); }
         }
       })();
@@ -470,7 +492,7 @@ async function pipelineWC(clips, o, ctx) {
             } else sample.setTimestamp(cursor);
             cursor += sample.duration;
             if (cursor > offset + len + 0.05) { sample.close(); break; }
-            await asrc.add(sample); sample.close();
+            try { await asrc.add(sample); } finally { sample.close(); }
           }
         }
         // pad with silence so that every clip contributes exactly its length of audio
@@ -701,22 +723,27 @@ register({
       const bpp = vbr / (sv.width * sv.height * fps);
       if (bpp < 0.045) width = capW(Math.max(160, sv.width * Math.sqrt(bpp / 0.045)));
     }
-    let r = null, attempts = 0;
+    // encoders miss their bitrate (hardware ones by ±25 %): re-run with a corrected bitrate until the file lands in 88–100 % of the target
+    let r = null, attempts = 0, best = null;
     for (; attempts < 3;) {
       attempts++;
       r = await runConvert({ ...base, width, vbitrate: Math.round(vbr), abitrate: abr || undefined }, ctx, src, outPath);
-      if (r.output.bytes <= target) break;
-      vbr = Math.max(15000, vbr * (target / r.output.bytes) * 0.93);
-      ctx.log(`attempt ${attempts}: ${r.output.bytes} bytes > target ${Math.round(target)}; retrying at ${Math.round(vbr / 1000)} kbit/s`);
+      const size = r.output.bytes, audioBytes = (r.audio?.bitrate || abr || 0) * dur / 8;
+      if (size <= target && (!best || size > best.size)) best = { r, size, bytes: vfs.read(outPath), vbr };
+      if (size <= target && size >= 0.88 * target) break;
+      const k = (target * 0.97 - audioBytes) / Math.max(1, size - audioBytes);
+      vbr = Math.max(15000, vbr * (size > target ? Math.min(0.95, k) * 0.96 : Math.min(1.6, k) * 0.97));
+      ctx.log(`attempt ${attempts}: ${size} bytes vs target ${Math.round(target)}; next video bitrate ${Math.round(vbr / 1000)} kbit/s`);
     }
+    if (best && best.r !== r) { const { path, mime, bytes: _b, ...meta } = best.r.output; r = { ...best.r, output: await vfs.write(outPath, best.bytes, { mime, meta }) }; vbr = best.vbr; }
     const after = r.output.bytes;
-    return { ...r, before, after, ratio: r3(after / before), savedPercent: r3(100 * (1 - after / before)), targetBytes: Math.round(target), targetMet: after <= target, attempts, requestedVideoBitrate: Math.round(vbr), ...(after > target ? { note: 'still above the target after 3 attempts (encoders overshoot at very low bitrates) — lower maxWidth or fps' } : {}) };
+    return { ...r, before, after, ratio: r3(after / before), savedPercent: r3(100 * (1 - after / before)), targetBytes: Math.round(target), targetMet: after <= target, attempts, ...(after > target ? { note: 'still above the target after 3 attempts (encoders overshoot at very low bitrates) — lower maxWidth or fps' } : {}) };
   },
 });
 
 register({
   name: 'video.trim',
-  description: `Cut a time range out of a video or audio file, keeping container and codecs. mode=auto is frame-accurate: streams are copied when the cut allows it and re-encoded otherwise; mode=copy never re-encodes (fastest, lossless) but the cut snaps to the surrounding keyframes, so the result can start a little early; mode=reencode always re-encodes. Returns {output, backend, videoReencoded, duration, video, audio}. ${LIMITS}`,
+  description: `Cut a time range out of a video or audio file, keeping container and codecs. mode=auto (default) keeps the streams without re-encoding where it can and still plays exactly start..end: frames between the previous keyframe and start stay in the file but are hidden with negative timestamps (an edit list), which players and these tools honour; mode=copy insists on a pure stream copy (WebCodecs: same hidden pre-roll; ffmpeg: the cut snaps to the previous keyframe); mode=reencode re-encodes so the file starts cleanly on the first requested frame (smallest, slowest, lossy). Returns {output, backend, videoReencoded, duration, video, audio}. ${LIMITS}`,
   schema: {
     properties: {
       input: P.input('video or audio file'), output: P.output, start: P.start, end: P.end,
@@ -1173,9 +1200,10 @@ register({
   },
 });
 
+const MUX_COPY = { mp4: ['aac'], mov: ['aac', 'pcm'], webm: ['opus', 'vorbis'], mkv: ['aac', 'opus', 'mp3', 'flac', 'vorbis', 'pcm'] };   // audio codecs kept as-is per container
 register({
   name: 'video.mux',
-  description: 'Combine the picture of one file with the sound of another (add or replace a soundtrack). The video stream is copied when its codec fits the target container; the audio is copied or converted to the container default (mp4/mov: aac, webm: opus). shortest=true cuts the audio to the video length. Returns {output, backend, duration, video, audio}.',
+  description: 'Combine the picture of one file with the sound of another (add or replace a soundtrack). The video stream is copied (it must already fit the container — convert first otherwise); the audio is copied when it is the usual codec of the container (mp4/mov: aac, webm: opus/vorbis, mkv: anything) and converted to it otherwise. shortest=true cuts the audio to the video length. Returns {output, backend, duration, video, audio}.',
   schema: {
     properties: {
       video: { type: 'string', description: 'VFS path of the file providing the video track (its own audio is dropped)' },
@@ -1201,17 +1229,19 @@ register({
       const fmt = mbFormat(lib, format);
       if (!V2MB[vs.video.codec] || !fmt.getSupportedVideoCodecs().includes(V2MB[vs.video.codec])) throw new Error(`.${format} cannot hold ${vs.video.codec} video without re-encoding — convert the video first`);
       const srcA = A2MB[as.audio.codec] || (as.audio.codec.startsWith('pcm_') ? as.audio.codec.replace('pcm_', 'pcm-') : null);
-      let acodec = srcA && cont.a.includes(as.audio.codec.replace(/^pcm_.*/, 'pcm')) && fmt.getSupportedAudioCodecs().includes(srcA) && !(as.audio.codec.startsWith('pcm') && format !== 'mov' && format !== 'mkv') ? srcA : null;
+      let acodec = srcA && MUX_COPY[format].includes(as.audio.codec.replace(/^pcm_.*/, 'pcm')) && fmt.getSupportedAudioCodecs().includes(srcA) ? srcA : null;
       const copyAudio = !!acodec;
       if (!acodec) { if (!as.audio.canDecode) throw new Error(`this browser cannot decode the ${as.audio.codec} audio`); acodec = await chooseAudioCodec(lib, format, null); }
       const u = uname(acodec);
       const sr = !copyAudio && RATES[u] && !RATES[u].includes(as.audio.sampleRate) ? RATES[u].find((x) => x >= as.audio.sampleRate) || 48000 : undefined;
       const ch = !copyAudio && as.audio.channels > (MAXCH[u] || 8) ? MAXCH[u] : undefined;
+      const abr = copyAudio ? undefined : defAbr(u, ch || as.audio.channels);
+      if (!copyAudio && !acodec.startsWith('pcm-') && !(await ensureAudioEncoder(acodec, { numberOfChannels: ch || as.audio.channels, sampleRate: sr || as.audio.sampleRate, ...(abr ? { bitrate: abr } : {}) }))) throw new Error(`this browser cannot encode ${u} audio for .${format}`);
       const iv = await openInput(a.video), ia = await openInput(a.audio);
       const output = new lib.Output({ format: fmt, target: new lib.BufferTarget() });
       try {
         const c1 = await lib.Conversion.init({ input: iv, output, composable: true, tracks: 'primary', showWarnings: false, video: { codec: V2MB[vs.video.codec] }, audio: { discard: true } });
-        const c2 = await lib.Conversion.init({ input: ia, output, composable: true, tracks: 'primary', showWarnings: false, video: { discard: true }, audio: { codec: acodec, ...(sr ? { sampleRate: sr } : {}), ...(ch ? { numberOfChannels: ch } : {}) }, ...(end ? { trim: { end: Math.min(end, as.duration) } } : {}) });
+        const c2 = await lib.Conversion.init({ input: ia, output, composable: true, tracks: 'primary', showWarnings: false, video: { discard: true }, audio: { codec: acodec, ...(abr ? { quality: mbQuality(lib, abr) } : {}), ...(sr ? { sampleRate: sr } : {}), ...(ch ? { numberOfChannels: ch } : {}) }, ...(end ? { trim: { end: Math.min(end, as.duration) } } : {}) });
         if (!c1.utilizedTracks.length || !c2.utilizedTracks.length) throw new Error(`webcodecs cannot mux these tracks (${[...c1.discardedTracks, ...c2.discardedTracks].filter((d) => d.reason !== 'discarded_by_user').map((d) => `${d.track.type}: ${d.reason}`).join('; ')})`);
         c1.onProgress = (f) => ctx.progress(f * 0.95, 'webcodecs');
         await output.start();
@@ -1221,7 +1251,7 @@ register({
       } catch (e) { await output.cancel().catch(() => {}); throw oom(e); } finally { iv.dispose(); ia.dispose(); }
     }, (reason) => ffJob(ctx, async (job) => {
       const out = job.tmp(`out.${format}`);
-      const copyV = cont.v.includes(vs.video.codec) && FF2U[vs.video.codec], copyA = cont.a.includes(as.audio.codec);
+      const copyV = cont.v.includes(vs.video.codec) && FF2U[vs.video.codec], copyA = MUX_COPY[format].includes(as.audio.codec);
       const args = ['-i', job.input(a.video), '-i', job.input(a.audio), '-map', '0:v:0', '-map', '1:a:0', '-sn', '-dn'];
       args.push('-c:v', ...(copyV ? ['copy'] : FF_V[cont.v[0]]), '-c:a', ...(copyA ? ['copy'] : FF_A[cont.a[0]]), '-strict', '-2');
       if (end) args.push('-t', String(end));
