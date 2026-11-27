@@ -412,9 +412,9 @@ pub unsafe extern "C" fn composite(base: *const u8, bw: u32, bh: u32, top: *cons
     }
 }
 
-/// Raw copy of src into dst at (x,y), clipped, no blending.
+/// Draw src into dst at (x,y), clipped, in place. over = 0: raw copy; over != 0: alpha-over (source-over) blending.
 #[no_mangle]
-pub unsafe extern "C" fn blit(s: *const u8, sw: u32, sh: u32, d: *mut u8, dw: u32, dh: u32, x: i32, y: i32) {
+pub unsafe extern "C" fn blit(s: *const u8, sw: u32, sh: u32, d: *mut u8, dw: u32, dh: u32, x: i32, y: i32, over: u32) {
     let (s, d) = (rs(s, sw, sh), ws(d, dw, dh));
     let (sw, sh, dw, dh) = (sw as i32, sh as i32, dw as i32, dh as i32);
     let x0 = (-x).max(0);
@@ -430,7 +430,26 @@ pub unsafe extern "C" fn blit(s: *const u8, sw: u32, sh: u32, d: *mut u8, dw: u3
         let a = ((sy * sw + x0) * 4) as usize;
         let n = ((x1 - x0) * 4) as usize;
         let b = ((dy * dw + x0 + x) * 4) as usize;
-        d[b..b + n].copy_from_slice(&s[a..a + n]);
+        if over == 0 {
+            d[b..b + n].copy_from_slice(&s[a..a + n]);
+            continue;
+        }
+        for (o, i) in d[b..b + n].chunks_exact_mut(4).zip(s[a..a + n].chunks_exact(4)) {
+            if i[3] == 255 {
+                o.copy_from_slice(i);
+                continue;
+            }
+            let sa = i[3] as f32 / 255.0;
+            let ba = o[3] as f32 / 255.0;
+            let oa = sa + ba * (1.0 - sa);
+            if oa <= 0.0 {
+                continue;
+            }
+            for c in 0..3 {
+                o[c] = clamp8((i[c] as f32 * sa + o[c] as f32 * ba * (1.0 - sa)) / oa);
+            }
+            o[3] = clamp8(oa * 255.0);
+        }
     }
 }
 

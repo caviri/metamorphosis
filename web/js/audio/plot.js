@@ -80,7 +80,7 @@ export function drawTimeAxis(g, th, rect, t0, t1, { labels = true, grid = false,
     if (x < rect.x - 1 || x > rect.x + rect.w + 1) continue;
     if (grid) { g.strokeStyle = th.grid; g.beginPath(); g.moveTo(x, rect.y); g.lineTo(x, rect.y + rect.h); g.stroke(); }
     g.strokeStyle = th.fg; g.beginPath(); g.moveTo(x, rect.y + rect.h); g.lineTo(x, rect.y + rect.h + 5); g.stroke();
-    if (labels) { g.fillStyle = th.fg; g.fillText(fmtTime(t, step), x, rect.y + rect.h + 7); }
+    if (labels) { const txt = fmtTime(t, step), hw = g.measureText(txt).width / 2 + 2, cw = g.canvas.width; g.fillStyle = th.fg; g.fillText(txt, Math.min(cw - hw, Math.max(hw, x)), rect.y + rect.h + 7); }
   }
   return { step, unit: step >= 60 || t1 >= 600 ? 'm:ss' : 's' };
 }

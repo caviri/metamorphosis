@@ -56,7 +56,8 @@ async function runJob(ctx, fn) {
   const id = ++jobSeq, dir = `/in${id}`;
   const blobs = []; const scratch = new Set(); let mountedCount = -1, dirMade = false, bytesIn = 0, bytesOut = 0, dead = false;
   let log = []; let onLine = null;
-  const logCb = ({ message }) => { log.push(message); if (log.length > 600) log = log.slice(-300); onLine?.(message); };
+  let lastLog = performance.now();
+  const logCb = ({ message }) => { lastLog = performance.now(); log.push(message); if (log.length > 600) log = log.slice(-300); onLine?.(message); };
   f.on('log', logCb);
   const fail = (e, what) => {
     const m = msgOf(e);
@@ -89,7 +90,7 @@ async function runJob(ctx, fn) {
     async ls(prefix) { return (await f.listDir('/')).filter((x) => !x.isDir && x.name.startsWith(prefix)).map((x) => x.name).sort(); },
     async exec(args, opts = {}) { return job.run('exec', args, opts); },
     async probe(args, opts = {}) { return job.run('ffprobe', args, opts); },
-    async run(kind, args, { duration, span = [0, 1], timeout = 30 * 60000, allowFail = false, note = 'ffmpeg' } = {}) {
+    async run(kind, args, { duration, span = [0, 1], timeout = 30 * 60000, stall = 150000, allowFail = false, note = 'ffmpeg' } = {}) {
       await mount();
       log = [];
       let last = 0;
@@ -99,10 +100,20 @@ async function runJob(ctx, fn) {
         if (t === null || now - last < 250) return;
         last = now; ctx?.progress?.(span[0] + (span[1] - span[0]) * Math.max(0, Math.min(1, t / duration)), note);
       } : null;
-      let code;
-      try { code = await f[kind](args, timeout); } catch (e) { throw fail(e, kind); } finally { onLine = null; }
+      // ffmpeg.wasm's own timeout is only checked between frames, so a stuck encoder would hang forever: watch it from outside
+      let code, dog; const t0 = lastLog = performance.now();
+      const watchdog = new Promise((_, rej) => { dog = setInterval(() => {
+        const now = performance.now();
+        if (now - t0 > timeout) rej(new Error(`timeout: no result after ${Math.round(timeout / 1000)} s`));
+        else if (now - lastLog > stall) rej(new Error(`stalled: ffmpeg produced no output for ${Math.round(stall / 1000)} s (this encoder/filter does not work in the WebAssembly build, or the job is far too heavy for one CPU thread)`));
+      }, 1000); });
+      try { code = await Promise.race([f[kind](args, timeout), watchdog]); } catch (e) {
+        if (/^(timeout|stalled):/.test(msgOf(e))) { dead = true; throw new Error(`ffmpeg ${kind} ${msgOf(e)} — the worker was stopped`); }
+        throw fail(e, kind);
+      } finally { clearInterval(dog); onLine = null; }
       const lines = log.slice();
-      if (lines.some((l) => /Aborted\(|Cannot enlarge memory|out of memory/i.test(l)) && code !== 0) throw fail(lines.filter((l) => FATAL.test(l)).pop() || 'aborted', kind);
+      const crash = code !== 0 && lines.find((l) => /Cannot enlarge memory|out of memory|OOM|memory access out of bounds|Aborted\([^)]/i.test(l));   // a bare "Aborted()" ends every normal run
+      if (crash) throw fail(`RuntimeError: ${crash}`, kind);
       if (code !== 0 && !allowFail) {
         const why = lines.filter((l) => !NOISE.test(l)).slice(-6).join(' | ').slice(0, 700);
         throw new Error(code === 1 && !why ? `ffmpeg timed out or failed without a message (args: ${args.join(' ').slice(0, 200)})` : `ffmpeg exited with code ${code}: ${why || '(no message)'}`);

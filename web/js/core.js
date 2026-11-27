@@ -66,10 +66,11 @@ const persist = (() => {
     try {
       const db = await open();
       return await new Promise((res, rej) => { const t = db.transaction('vfs', mode); const out = fn(t.objectStore('vfs')); t.oncomplete = () => res(out?.result); t.onerror = t.onabort = () => rej(t.error); });
-    } catch (e) { if (!off) console.warn('[μ] vfs persistence off:', e?.message || e); off = e?.name !== 'QuotaExceededError'; return null; }
+    } catch (e) { console.warn('[μ] vfs: a file was not persisted (it stays in memory for this page):', e?.message || e); return null; }
   };
   return {
-    put: (path, f) => tx('readwrite', (s) => s.put({ bytes: f.bytes, mime: f.mime, meta: f.meta, mtime: f.mtime }, path)),
+    // very large files stay memory-only: IndexedDB rejects or crawls on them
+    put: (path, f) => (f.bytes.byteLength > 64 * 1024 * 1024 ? tx('readwrite', (s) => s.delete(path)) : tx('readwrite', (s) => s.put({ bytes: f.bytes, mime: f.mime, meta: f.meta, mtime: f.mtime }, path))),
     del: (path) => tx('readwrite', (s) => s.delete(path)),
     async restore() {
       if (typeof indexedDB === 'undefined') { off = true; return 0; }
@@ -152,6 +153,7 @@ function coerce(v, s, key) {
   if ((t === 'number' || t === 'integer') && typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) v = Number(v);
   if (t === 'boolean' && typeof v === 'string') v = v === 'true' || v === '1' || v === 'yes';
   if (t === 'string' && typeof v !== 'string' && typeof v !== 'object') v = String(v);
+  if ((t === 'object' || t === 'array') && typeof v === 'string' && /^\s*[[{]/.test(v)) { try { v = JSON.parse(v); } catch { throw new Error(`arg "${key}" is not valid JSON`); } }
   if (t === 'array' && !Array.isArray(v)) v = typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : [v];
   if (t === 'array' && s.items) v = v.map((x) => coerce(x, s.items, key));
   if (t === 'integer' && typeof v === 'number') v = Math.round(v);
@@ -260,7 +262,10 @@ const gpu = {
       try {
         const adapter = globalThis.navigator?.gpu ? await navigator.gpu.requestAdapter() : null;
         if (adapter) {
-          const device = await adapter.requestDevice();
+          // ask for what the adapter really has, so large images stay on the GPU
+          const L = adapter.limits, want = {};
+          for (const k of ['maxTextureDimension2D', 'maxBufferSize', 'maxStorageBufferBindingSize']) if (L?.[k]) want[k] = L[k];
+          const device = await adapter.requestDevice({ requiredLimits: want }).catch(() => adapter.requestDevice());
           device.lost.then(() => { gpuState = undefined; });
           const i = adapter.info || {};
           st = { adapter, device, info: { vendor: i.vendor || '', architecture: i.architecture || '', device: i.device || '', description: i.description || '', fallback: !!(i.isFallbackAdapter ?? adapter.isFallbackAdapter) } };

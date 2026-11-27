@@ -378,19 +378,25 @@ export function goertzel(x, start, n, f, fs, win) {
 }
 
 // ─────────────────────────────────────────────────────────── onset ──
-/** Spectral-flux onset envelope (log-compressed magnitude, half-wave rectified). Returns {env, rate (Hz), fftSize, hop}. */
+/**
+ * Spectral-flux onset envelope (log-compressed magnitude, half-wave rectified).
+ * The first `lead` frames are centred before sample 0, so sound that starts with the file enters the window gradually like
+ * any later onset. Frame i is centred at (i − lead)·hop samples. Returns {env, rate (Hz), fftSize, hop, lead}.
+ */
 export function onsetEnvelope(x, fs, rate = 200) {
   const hop = Math.max(1, Math.round(fs / rate)), N = nextPow2(Math.max(256, Math.round(fs * 0.023)));
-  const st = new STFT(N, 'hann'), frames = Math.max(1, Math.floor(x.length / hop));
+  const lead = Math.ceil(N / 2 / hop);
+  // stop where the window would run past the end: the cut-off at end of file is not an onset
+  const st = new STFT(N, 'hann'), frames = Math.max(1, Math.floor((x.length - N / 2) / hop)) + lead;
   const env = new Float32Array(frames), cur = new Float32Array(st.bins); let prev = new Float32Array(st.bins), mag = new Float32Array(st.bins);
   for (let f = 0; f < frames; f++) {
-    st.power(x, f * hop, cur);
+    st.power(x, (f - lead) * hop, cur);
     let flux = 0;
     for (let k = 1; k < st.bins; k++) { const m = Math.log1p(1000 * Math.sqrt(cur[k])); const dlt = m - prev[k]; if (dlt > 0) flux += dlt; mag[k] = m; }
-    env[f] = f === 0 ? 0 : flux / st.bins;
+    env[f] = flux / st.bins;
     const t = prev; prev = mag; mag = t;
   }
-  return { env, rate: fs / hop, fftSize: N, hop };
+  return { env, rate: fs / hop, fftSize: N, hop, lead };
 }
 
 /** deterministic PRNG (mulberry32) → () => [0,1) */

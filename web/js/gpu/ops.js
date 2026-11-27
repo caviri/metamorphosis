@@ -86,9 +86,9 @@ export const OPS = {
     taps: () => 1,
   },
   bilateral: {
-    doc: '{sigmaSpace 0.5..16, sigmaColor 1..255} — edge-preserving blur, radius = ceil(2·sigmaSpace); weight = exp(−d²/(2σs²))·exp(−(ΔR²+ΔG²+ΔB²)/(2σc²)) with colour differences in 0..255 units.',
+    doc: '{sigmaSpace 0.5..25, sigmaColor 1..255} — edge-preserving blur, radius = ceil(2·sigmaSpace); weight = exp(−d²/(2σs²))·exp(−(ΔR²+ΔG²+ΔB²)/(2σc²)) with colour differences in 0..255 units.',
     example: { sigmaSpace: 3, sigmaColor: 30 },
-    norm: (p) => ({ sigmaSpace: num(p.sigmaSpace, 'sigmaSpace', 0.5, 16, 3), sigmaColor: num(p.sigmaColor, 'sigmaColor', 1, 255, 30) }),
+    norm: (p) => ({ sigmaSpace: num(p.sigmaSpace, 'sigmaSpace', 0.5, 25, 3), sigmaColor: num(p.sigmaColor, 'sigmaColor', 1, 255, 30) }),
     taps: (p) => (2 * Math.ceil(2 * p.sigmaSpace) + 1) ** 2,
   },
 };

@@ -113,10 +113,10 @@ async function describe(input, lib, { bytes, deep = false } = {}) {
     if (t.isVideoTrack()) {
       const fr = await t.computeFrameRateMetrics().catch(() => null);
       Object.assign(d, { width: await t.getDisplayWidth(), height: await t.getDisplayHeight(), codedWidth: await t.getCodedWidth(), codedHeight: await t.getCodedHeight(), rotation: await t.getRotation(), fps: r3(fr?.bestGuessFrameRate ?? stats?.averagePacketRate), constantFrameRate: fr ? fr.frameRateIsConstant : null, frames: deep && stats ? stats.packetCount : undefined, hdr: (await t.hasHighDynamicRange().catch(() => false)) || undefined, canDecode: await t.canDecode().catch(() => false) });
-      if (t === pv) out.video = d;
+      if (pv && t.id === pv.id) out.video = d;
     } else if (t.isAudioTrack()) {
       Object.assign(d, { sampleRate: await t.getSampleRate(), channels: await t.getNumberOfChannels(), canDecode: await t.canDecode().catch(() => false) });
-      if (t === pa) out.audio = d;
+      if (pa && t.id === pa.id) out.audio = d;
     }
     out.tracks.push(d);
   }
@@ -135,7 +135,7 @@ async function probeMB(src, opts = {}) {
 }
 const rate = (s) => { if (!s || s === '0/0') return null; const [a, b] = String(s).split('/').map(Number); return b ? a / b : a; };
 const FF2U = { h264: 'h264', hevc: 'hevc', vp8: 'vp8', vp9: 'vp9', av1: 'av1', aac: 'aac', opus: 'opus', mp3: 'mp3', vorbis: 'vorbis', flac: 'flac' };
-async function probeFF(path, ctx) {
+async function probeFF(path, ctx, forced = false) {
   const bytes = vfs.stat(path).bytes;
   const j = await ffJob(ctx, async (job) => {
     const inp = job.input(path), o = job.tmp('probe.json');
@@ -145,7 +145,8 @@ async function probeFF(path, ctx) {
   });
   const lib = hasWebCodecs() ? await mb() : null;
   const duration = Number(j.format.duration) || null;
-  const out = { container: (j.format.format_name || '').split(',')[0], formatName: j.format.format_long_name || j.format.format_name, mime: vfs.mimeOf(path), duration: r3(duration), bytes, bitrate: Number(j.format.bit_rate) || (duration ? Math.round(bytes * 8 / duration) : null), video: null, audio: null, tracks: [] };
+  const names = (j.format.format_name || '').split(','), ext = vfs.extOf(path);
+  const out = { container: names.includes(ext) ? ext : names.includes('matroska') ? (ext === 'webm' ? 'webm' : 'mkv') : names[0], formatName: j.format.format_long_name || j.format.format_name, mime: vfs.mimeOf(path), duration: r3(duration), bytes, bitrate: Number(j.format.bit_rate) || (duration ? Math.round(bytes * 8 / duration) : null), video: null, audio: null, tracks: [] };
   for (const s of (j.streams || []).slice(0, 16)) {
     const type = s.codec_type === 'video' ? 'video' : s.codec_type === 'audio' ? 'audio' : s.codec_type;
     const codec = FF2U[s.codec_name] || s.codec_name || 'unknown';
@@ -167,7 +168,9 @@ async function probeFF(path, ctx) {
   }
   const t = {}; for (const k of ['title', 'artist', 'album', 'genre', 'comment', 'date']) { const v = j.format.tags?.[k] ?? j.format.tags?.[k.toUpperCase()]; if (v) t[k] = String(v).slice(0, 200); } if (Object.keys(t).length) out.tags = t;
   const av = out.tracks.filter((x) => x.type === 'video' || x.type === 'audio');
-  out.browserCanDecode = false; out.note = 'container is not readable by the WebCodecs demuxer — tools will use the ffmpeg backend for this file'; out.codecsDecodable = av.length > 0 && av.every((x) => x.canDecode);
+  out.codecsDecodable = av.length > 0 && av.every((x) => x.canDecode);
+  if (forced) out.browserCanDecode = out.codecsDecodable;
+  else { out.browserCanDecode = false; out.note = 'the container is not readable by the WebCodecs demuxer — video.* tools use the ffmpeg backend for this file'; }
   return out;
 }
 /** unified description of a VFS media file. backend: auto | webcodecs | ffmpeg → {…, backend} */
@@ -179,7 +182,7 @@ async function probeAny(path, ctx, { backend = 'auto', deep = false } = {}) {
     if (info) return { ...info, backend: 'webcodecs' };
     if (backend === 'webcodecs') throw new Error(`"${path}" is not in a container the WebCodecs demuxer reads (mp4, mov, webm, mkv, wav, mp3, ogg, flac, aac/adts, mpeg-ts)${err ? `: ${msgOf(err)}` : ''}. Try backend=ffmpeg.`);
   }
-  return { ...(await probeFF(path, ctx)), backend: 'ffmpeg' };
+  return { ...(await probeFF(path, ctx, backend === 'ffmpeg')), backend: 'ffmpeg' };
 }
 const brief = (info) => (!info ? {} : {
   duration: info.duration,
@@ -240,11 +243,11 @@ async function convertWC(p, ctx, src) {
     if (!vcodec) throw new Error(p.vcodec ? `this browser cannot encode ${p.vcodec} at ${size.width}×${size.height} into .${p.format} via WebCodecs` : `no WebCodecs video encoder fits .${p.format} in this browser`);
   }
   // audio plan
-  let acodec = null, sampleRate = p.sampleRate, channels = p.channels;
+  let acodec = null, sampleRate = p.sampleRate, channels = p.channels, audioCopy = false;
   if (sa) {
     const supported = fmtProbe.getSupportedAudioCodecs();
-    const aTransform = !!(p.abitrate || p.sampleRate || p.channels) || p.copy === 'never';
-    const srcMb = Object.entries(A2MB).find(([u]) => u === sa.codec)?.[1] || (sa.codec.startsWith('pcm_') ? sa.codec.replace('pcm_', 'pcm-') : null);
+    const srcMb = A2MB[sa.codec] || (sa.codec.startsWith('pcm_') ? sa.codec.replace('pcm_', 'pcm-') : null);
+    const aTransform = !!(p.abitrate || p.sampleRate || p.channels) || p.copy === 'never' || (p.format === 'wav' && srcMb !== 'pcm-s16');
     const want = p.acodec ? [A2MB[p.acodec]] : [...(!aTransform && srcMb ? [srcMb] : []), ...(cont.a || cont.codecs).map((c) => A2MB[c])];
     for (const c of want) {
       if (!c || !supported.includes(c)) continue;
@@ -253,7 +256,7 @@ async function convertWC(p, ctx, src) {
     }
     if (!acodec) throw new Error(p.acodec ? `this browser cannot encode ${p.acodec} audio into .${p.format} via WebCodecs` : `no usable audio encoder for .${p.format} in this browser`);
     const u = uname(acodec).replace(/^pcm_.*/, 'pcm');
-    const copying = !aTransform && srcMb === acodec;
+    const copying = audioCopy = !aTransform && srcMb === acodec;
     if (!copying) {
       if (RATES[u]) { const r = sampleRate || sa.sampleRate; if (!RATES[u].includes(r)) sampleRate = RATES[u].find((x) => x >= r) || RATES[u][RATES[u].length - 1]; }
       if ((channels || sa.channels) > (MAXCH[u] || 8)) channels = MAXCH[u];
@@ -261,7 +264,7 @@ async function convertWC(p, ctx, src) {
   }
   const trim = (p.start || p.end != null) ? { ...(p.start ? { start: p.start } : {}), ...(p.end != null ? { end: p.end } : {}) } : undefined;
   const hwEnc = sv && vcodec ? await hwEncodable(lib, vcodec, size.width, size.height) : false;
-  const modes = !sv ? ['no-preference'] : p.hardware === 'hardware' ? ['prefer-hardware'] : p.hardware === 'software' ? ['prefer-software'] : (hwEnc && vTransform && await hwDecodableOf(src.path) ? ['prefer-hardware', 'no-preference'] : ['no-preference']);
+  const modes = !sv ? ['no-preference'] : p.hardware === 'hardware' ? ['prefer-hardware'] : p.hardware === 'software' ? ['prefer-software'] : (hwEnc && vTransform && await hwDecodableOf(p.input) ? ['prefer-hardware', 'no-preference'] : ['no-preference']);
   let lastErr = null;
   for (const mode of modes) {
     const input = await openInput(p.input);
@@ -291,7 +294,7 @@ async function convertWC(p, ctx, src) {
         info: {
           backend: 'webcodecs', hardwareAccelerated: sv ? (encoded ? hwVerdict(mode, hwEnc) : false) : false,
           ...(sv ? { videoCodec: uname(vcodec), videoReencoded: encoded } : {}),
-          ...(sa ? { audioCodec: uname(acodec).replace(/^pcm_.*/, 'pcm'), audioEncoder: audioEncoderKind(acodec) } : {}),
+          ...(sa ? { audioCodec: uname(acodec).replace(/^pcm_.*/, 'pcm'), audioReencoded: !audioCopy, ...(audioCopy || acodec.startsWith('pcm-') ? {} : { audioEncoder: audioEncoderKind(acodec) }) } : {}),
           ...(sv && encoded && hwVerdict(mode, hwEnc) === null ? { hardwareNote: 'a hardware encoder exists and the browser chose between it and software (WebCodecs does not report which); pass hardware=hardware or hardware=software to force one' } : {}),
         },
       };
@@ -369,7 +372,7 @@ async function convertFF(p, ctx, src, reason) {
     args.push('-f', cont.ff, out);
     await job.exec(args, { duration: span });
     const bytes = await job.read(out);
-    return { bytes, info: { backend: 'ffmpeg', hardwareAccelerated: false, ...(sv ? { videoCodec: vcodec || src.video.codec, videoReencoded: p.copy !== 'forced' } : {}), ...(sa ? { audioCodec: acodec || src.audio.codec } : {}), ...(reason ? { fallbackReason: reason } : {}) } };
+    return { bytes, info: { backend: 'ffmpeg', hardwareAccelerated: false, ...(sv ? { videoCodec: vcodec || src.video.codec, videoReencoded: p.copy !== 'forced' } : {}), ...(sa ? { audioCodec: acodec || src.audio.codec, audioReencoded: p.copy !== 'forced' } : {}), ...(reason ? { fallbackReason: reason } : {}) } };
   });
 }
 /** shared by convert / compress / trim: validate, choose backend, run, write → result object */
@@ -423,7 +426,7 @@ async function pipelineWC(clips, o, ctx) {
   let sampleRate = o.sampleRate, channels = Math.min(o.channels || 2, MAXCH[ua] || 2);
   if (acodec && RATES[ua] && !RATES[ua].includes(sampleRate)) sampleRate = RATES[ua].find((x) => x >= sampleRate) || 48000;
   const hwEnc = await hwEncodable(lib, vcodec, o.width, o.height);
-  const mode = o.hardware === 'hardware' ? 'prefer-hardware' : o.hardware === 'software' ? 'prefer-software' : hwEnc ? 'prefer-hardware' : 'no-preference';
+  const mode = o.hardware === 'hardware' ? 'prefer-hardware' : o.hardware === 'software' ? 'prefer-software' : hwEnc && !o.noHw ? 'prefer-hardware' : 'no-preference';
   const total = clips.reduce((s, c) => s + ((c.end ?? c.info.duration) - (c.start || 0)) / (c.speed || 1), 0);
   const output = new lib.Output({ format: mbFormat(lib, o.format), target: new lib.BufferTarget() });
   const vsrc = new lib.VideoSampleSource({ codec: vcodec, quality: mbQuality(lib, o.vbitrate, o.quality || 'medium'), hardwareAcceleration: mode, transform: { width: o.width, height: o.height, fit: 'contain', ...(o.fps ? { frameRate: o.fps } : {}) } });
@@ -457,6 +460,7 @@ async function pipelineWC(clips, o, ctx) {
         if (at && await at.canDecode()) {
           for await (const s of new lib.AudioSampleSink(at).samples(t0, t1)) {
             let sample = s;
+            const want = offset + (s.timestamp - t0) / speed; if (want > cursor + 0.02) cursor = want;        // keep real gaps (late-starting audio)
             if (s.timestamp < t0 - 1e-4) { const skip = Math.round((t0 - s.timestamp) * s.sampleRate); if (skip >= s.numberOfFrames) { s.close(); continue; } sample = s.trim(skip); s.close(); }
             if (speed !== 1) { // resample trick: relabel the sample rate, the encoder's resampler does the rest (tempo and pitch change together)
               const n = sample.numberOfFrames, ch = sample.numberOfChannels, data = new Float32Array(n * ch);
@@ -477,11 +481,15 @@ async function pipelineWC(clips, o, ctx) {
         }
       })();
       await Promise.all([vTask, aTask]);
-      offset += len; input.dispose();
+      offset += len; input.dispose(); inputs.pop();
     }
     await output.finalize();
     return { bytes: new Uint8Array(output.target.buffer), info: { backend: 'webcodecs', hardwareAccelerated: hwVerdict(mode, hwEnc), videoCodec: uname(vcodec), ...(acodec ? { audioCodec: ua, audioEncoder: audioEncoderKind(acodec) } : {}) } };
-  } catch (e) { await output.cancel().catch(() => {}); throw oom(e); } finally { for (const i of inputs) i.dispose(); }
+  } catch (e) {
+    await output.cancel().catch(() => {}); for (const i of inputs.splice(0)) i.dispose();
+    if (mode === 'prefer-hardware' && o.hardware !== 'hardware' && oom(e) === e) { ctx.warn(`hardware encoder failed (${msgOf(e)}); retrying with the browser's default encoder`); return pipelineWC(clips, { ...o, noHw: true }, ctx); }
+    throw oom(e);
+  } finally { for (const i of inputs) i.dispose(); }
 }
 
 // ─────────────────────────────────────────────────── frame grabbing ──
@@ -507,9 +515,10 @@ async function grabFrames(path, src, times, size, a, ctx, onFrame, span = [0, 1]
   };
   const ff = (reason) => ffJob(ctx, async (job) => {
     const inp = job.input(path); let grabbed = 0;
+    const back = src.video?.fps ? 1 / src.video.fps - 0.002 : 0;      // -ss lands on the first frame at/after the time; step back so we get the frame SHOWN at that time
     for (let i = 0; i < times.length; i++) {
       const o = job.tmp(`f${i}.png`);
-      await job.exec(['-ss', String(Math.max(0, times[i])), '-i', inp, '-frames:v', '1', '-an', '-sn', '-vf', `scale=${size.width}:${size.height}`, '-f', 'image2', '-c:v', 'png', o], { allowFail: true });
+      await job.exec(['-ss', String(Math.max(0, r3(times[i] - back))), '-i', inp, '-frames:v', '1', '-an', '-sn', '-vf', `scale=${size.width}:${size.height}`, '-f', 'image2', '-c:v', 'png', o], { allowFail: true });
       if (await job.exists(o)) { const bmp = await createImageBitmap(new Blob([await job.read(o)], { type: 'image/png' })); await onFrame(bmp, times[i], i, times[i]); bmp.close(); grabbed++; }
       prog(i + 1);
     }
@@ -597,14 +606,13 @@ register({
       }
       out.video[name] = { decode: d, encode: e };
     }
-    const ASTR = { aac: 'mp4a.40.2', opus: 'opus', mp3: 'mp3', vorbis: 'vorbis', flac: 'flac', pcm: 'pcm-s16' };
-    for (const [name, codec] of Object.entries(ASTR)) {
-      const cfg = { codec, sampleRate: 48000, numberOfChannels: 2 };
-      const dec = name === 'pcm' ? true : out.webcodecs.audioDecoder && await sup('AudioDecoder', name === 'vorbis' || name === 'flac' ? { ...cfg, description: new Uint8Array(1) } : cfg);
-      const enc = name === 'pcm' ? true : out.webcodecs.audioEncoder && await sup('AudioEncoder', { ...cfg, bitrate: 128000 });
-      out.audio[name] = { decode: dec, encode: enc, ...(!enc && ['mp3', 'flac', 'aac'].includes(name) ? { encodeViaWasm: true } : {}), ...(!enc && name === 'vorbis' ? { encodeViaFfmpeg: true } : {}) };
+    const lib = await mb().catch(() => null);
+    for (const [name, codec] of Object.entries(A2MB)) {
+      const dec = name === 'pcm' ? true : !!lib && await lib.canDecodeAudio(codec).catch(() => false);
+      const wasm = audioEncoderKind(codec) === 'wasm';
+      const enc = name === 'pcm' ? true : !wasm && !!lib && await lib.canEncodeAudio(codec).catch(() => false);
+      out.audio[name] = { decode: dec, encode: enc || ['mp3', 'flac', 'aac'].includes(name) || name === 'vorbis', encoder: name === 'pcm' ? 'none (uncompressed)' : enc ? 'webcodecs' : ['mp3', 'flac', 'aac'].includes(name) ? 'bundled wasm (loaded on first use)' : name === 'vorbis' ? 'ffmpeg only' : null };
     }
-    out.audio.note = 'vorbis/flac decode support is probed with a dummy header and may read false although real files decode; video.probe gives the exact answer per file';
     out.containers = { webcodecs: Object.keys(CONTAINERS).filter((k) => CONTAINERS[k].mbf), ffmpegOnly: Object.keys(CONTAINERS).filter((k) => !CONTAINERS[k].mbf), audio: Object.keys(AUDIO_FORMATS) };
     const ff = { loaded: ffLoaded(), threads: false, sharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined' && !!globalThis.crossOriginIsolated, videoEncoders: Object.keys(FF_V), audioEncoders: Object.keys(FF_A), note: 'single-thread CPU build; no AV1 encoder and no AV1 decoder' };
     try { const r = await fetch(FF_URLS.wasm, { method: 'HEAD' }); ff.reachable = r.ok; ff.wasmBytes = Number(r.headers.get('content-length')) || null; } catch (e) { ff.reachable = false; ff.error = msgOf(e); }
@@ -675,8 +683,7 @@ register({
     const capW = (w) => (w && w < sv.width ? even(w) : undefined);
     if (!a.targetMB) {
       const PRE = { low: [854, 'low', 64], medium: [1280, 'medium', 96], high: [1920, 'high', 128] }[a.preset];
-      const landscape = sv.width >= sv.height;
-      const width = capW(a.maxWidth || (landscape ? PRE[0] : Math.round(PRE[0] * 9 / 16 * sv.width / sv.height * (sv.height / sv.width > 1 ? sv.height / sv.width : 1))));
+      const width = capW(a.maxWidth || (sv.width >= sv.height ? PRE[0] : Math.round(sv.width * PRE[0] / sv.height)));   // PRE[0] caps the long side
       const r = await runConvert({ ...base, width, quality: PRE[1], abitrate: kbps(a.audioBitrate || PRE[2]) }, ctx, src, outPath);
       const after = r.output.bytes;
       return { ...r, before, after, ratio: r3(after / before), savedPercent: r3(100 * (1 - after / before)), preset: a.preset, attempts: 1, ...(after >= before ? { note: 'the result is not smaller than the source — it was already compressed harder than this preset; try targetMB or a lower preset' } : {}) };
@@ -916,12 +923,14 @@ register({
       candidates = [];
       await grabFrames(a.input, src, cand, small, a, ctx, async (img, t) => {
         sg.drawImage(img, 0, 0, small.width, small.height);
-        const d = sg.getImageData(0, 0, small.width, small.height).data; let s = 0, s2 = 0; const n = d.length / 4;
-        for (let i = 0; i < d.length; i += 4) { const y = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]; s += y; s2 += y * y; }
-        const mean = s / n; candidates.push({ time: t, mean: r3(mean), contrast: r3(Math.sqrt(Math.max(0, s2 / n - mean * mean))) });
+        const d = sg.getImageData(0, 0, small.width, small.height).data, w = small.width, h = small.height, y = new Float32Array(w * h); let s = 0, e = 0;
+        for (let i = 0, j = 0; i < d.length; i += 4, j++) { y[j] = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]; s += y[j]; }
+        for (let r = 0; r < h - 1; r++) for (let q = 0; q < w - 1; q++) { const k = r * w + q; e += Math.min(40, Math.abs(y[k + 1] - y[k])) + Math.min(40, Math.abs(y[k + w] - y[k])); }   // clipped so letterbox bars and title text do not dominate
+        const mean = s / (w * h), detail = e / ((w - 1) * (h - 1));
+        candidates.push({ time: t, brightness: r3(mean), detail: r3(detail), score: r3(detail * (mean < 30 ? mean / 30 : mean > 235 ? (255 - mean) / 20 : 1)) });
       }, [0, 0.7]);
       if (!candidates.length) throw new Error('no frame could be decoded');
-      time = candidates.reduce((b, c) => (c.contrast > b.contrast ? c : b)).time;
+      time = candidates.reduce((b, c) => (c.score > b.score ? c : b)).time;
     } else { time = Number(a.time); if (!(time >= 0) || time > src.duration) throw new Error(`time must be "auto" or a number of seconds within 0…${src.duration}`); time = Math.min(time, Math.max(0, src.duration - 0.001)); }
     let stat = null;
     const r = await grabFrames(a.input, src, [time], size, a, ctx, async (img, t, i, actual) => {
@@ -930,7 +939,7 @@ register({
       stat = await vfs.write(out, bytes, { mime, meta: { width: size.width, height: size.height, time: r3(actual) } });
     }, [0.7, 1]);
     if (!stat) throw new Error(`no frame could be decoded at ${time}s`);
-    return { output: stat, time: r3(time), width: size.width, height: size.height, ...(candidates ? { picked: 'auto (highest contrast of the candidates)', candidates } : {}), backend: r.backend, hardwareAccelerated: r.hardwareAccelerated, ...(r.fallbackReason ? { fallbackReason: r.fallbackReason } : {}) };
+    return { output: stat, time: r3(time), width: size.width, height: size.height, ...(candidates ? { picked: 'auto (most edge detail among the candidates, dark frames penalised)', candidates } : {}), backend: r.backend, hardwareAccelerated: r.hardwareAccelerated, ...(r.fallbackReason ? { fallbackReason: r.fallbackReason } : {}) };
   },
 });
 
@@ -1227,11 +1236,11 @@ register({
 });
 
 // ─────────────────────────────────────────────────────────── audio ──
-async function audioTranscode(a, ctx, tag) {
+async function audioTranscode(a, ctx, tag, dflt = null) {
   const src = await probeAny(a.input, ctx);
   if (!src.audio) throw new Error(`"${a.input}" has no audio track (tracks: ${src.tracks.map((t) => `${t.type}/${t.codec}`).join(', ') || 'none'})`);
   const outExt = a.output ? vfs.extOf(a.output) : '';
-  const format = a.format || (AUDIO_FORMATS[outExt] ? outExt : outExt === 'mp4' ? 'm4a' : outExt === 'oga' ? 'ogg' : outExt === 'weba' ? 'webm' : null);
+  const format = a.format || (AUDIO_FORMATS[outExt] ? outExt : outExt === 'mp4' ? 'm4a' : outExt === 'oga' ? 'ogg' : outExt === 'weba' ? 'webm' : dflt);
   if (!format) throw new Error(`pass format (${Object.keys(AUDIO_FORMATS).join(' | ')}) or an output path with one of those extensions`);
   const def = AUDIO_FORMATS[format];
   if (!def) throw new Error(`cannot encode audio format "${format}" — supported: ${Object.keys(AUDIO_FORMATS).join(', ')}`);
@@ -1257,9 +1266,9 @@ const AUDIO_RET = 'Returns {output, format, codec, sampleRate, channels, bitrate
 register({
   name: 'video.extractAudio',
   description: `Pull the audio track out of a video into an audio file: wav, mp3, m4a, aac, ogg, opus, flac or webm. When the track already has the target codec and no bitrate/sample-rate/channel change is asked, it is copied without re-encoding (e.g. AAC from mp4 → m4a). ${AUDIO_RET}`,
-  schema: { properties: { input: P.input(), output: P.output, ...AUDIO_PROPS, format: { ...AUDIO_PROPS.format, default: 'm4a', description: AUDIO_PROPS.format.description.replace('Default: from the output extension', 'Default m4a, or from the output extension') } }, required: ['input'] },
+  schema: { properties: { input: P.input(), output: P.output, ...AUDIO_PROPS, format: { ...AUDIO_PROPS.format, description: AUDIO_PROPS.format.description.replace('Default: from the output extension', 'Default: from the output extension, else m4a') } }, required: ['input'] },
   examples: ['video.extractAudio input=clip.mp4 format=mp3 bitrate=160', 'video.extractAudio input=talk.webm output=talk.wav sampleRate=16000 channels=1'],
-  run(a, ctx) { const ext = a.output ? vfs.extOf(a.output) : ''; const fromExt = AUDIO_FORMATS[ext] ? ext : null; return audioTranscode({ ...a, format: fromExt && a.format === 'm4a' ? fromExt : a.format }, ctx, 'audio'); },
+  run: (a, ctx) => audioTranscode(a, ctx, 'audio', 'm4a'),
 });
 
 register({
@@ -1315,7 +1324,6 @@ register({
       })();
       for (let i = 0; i < n; i++) {
         const t = i / a.fps, bw = W / BARS.length, shift = (t * W * 0.1) % W;
-        for (let k = -1; k <= BARS.length; k++) { g.fillStyle = BARS[((k % 7) + 7) % 7]; g.fillRect(Math.round(k * bw + shift % bw) - (shift >= bw ? 0 : 0), 0, Math.ceil(bw) + 1, H); }
         const off = Math.floor(shift / bw); for (let k = -1; k <= BARS.length; k++) { g.fillStyle = BARS[(((k - off) % 7) + 7) % 7]; g.fillRect(Math.round(k * bw + (shift % bw)), 0, Math.ceil(bw) + 1, Math.round(H * 0.62)); }
         const gr = g.createLinearGradient(0, 0, W, 0); gr.addColorStop(0, '#000'); gr.addColorStop(1, '#fff'); g.fillStyle = gr; g.fillRect(0, Math.round(H * 0.62), W, Math.round(H * 0.1));
         g.fillStyle = '#16181c'; g.fillRect(0, Math.round(H * 0.72), W, H - Math.round(H * 0.72));

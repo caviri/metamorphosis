@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.wasm binary
+*.onnx binary
+*.gz binary
+*.traineddata binary
+*.bcmap binary
+*.pfb binary
+*.ttf binary
+*.icc binary

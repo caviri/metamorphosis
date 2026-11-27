@@ -283,7 +283,7 @@ function* boxes(b, start, end) {
   }
 }
 const find = (b, box, type) => { for (const x of boxes(b, box.start, box.end)) if (x.type === type) return x; return null; };
-const MP4_CODECS = { mp4a: 'aac', alac: 'alac', Opus: 'opus', fLaC: 'flac', 'ac-3': 'ac3', 'ec-3': 'eac3', samr: 'amr', sawb: 'amr-wb', sowt: 'pcm', twos: 'pcm', lpcm: 'pcm', '.mp3': 'mp3' };
+const MP4_CODECS = { mp4a: 'aac', alac: 'alac', Opus: 'opus', fLaC: 'flac', 'ac-3': 'ac3', 'ec-3': 'eac3', samr: 'amr', sawb: 'amr-wb', sowt: 'pcm', twos: 'pcm', lpcm: 'pcm', ipcm: 'pcm', fpcm: 'pcm_float', '.mp3': 'mp3' };
 function sniffMp4(b, info) {
   const dv = view(b); info.container = 'mp4'; info.brand = clean(ascii(b, 8, 4));
   if (/^M4A|^M4B/.test(info.brand)) info.container = 'm4a'; if (/^qt/.test(info.brand)) info.container = 'mov'; if (/^3g/.test(info.brand)) info.container = '3gp';

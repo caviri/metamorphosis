@@ -68,8 +68,35 @@ async function openLib(path, password, opts = {}) {
     } else if (enc) throw new Error(`"${path}": the password was not accepted (${e.message})`);
     else throw new Error(`"${path}" could not be parsed as a PDF: ${e.message}`);
   }
-  return { L, doc, bytes };
+  return { L, doc, bytes, wasEncrypted: scrubDecrypted(L, doc, bytes) };
 }
+
+/**
+ * After a password load pdf-lib holds plaintext objects but keeps the old cross-reference stream (whose dictionary still
+ * says /Encrypt) and the encryption dictionary itself, and forgets /Info. Remove the leftovers so what we save is a
+ * clean, unencrypted file that every reader agrees on.
+ */
+function scrubDecrypted(L, doc, bytes) {
+  const ctx = doc.context; if (!ctx.isDecrypted) return false;
+  const N = (s) => L.PDFName.of(s);
+  if (!ctx.trailerInfo.Info) { // the trailer (never encrypted) still names the Info dictionary: take the last one in the file
+    let tail = ''; const from = Math.max(0, bytes.length - 65536); for (let i = from; i < bytes.length; i += 8192) tail += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(bytes.length, i + 8192)));
+    const all = [...tail.matchAll(/\/Info\s+(\d+)\s+(\d+)\s+R/g)]; const m = all[all.length - 1];
+    if (m) { const ref = L.PDFRef.of(Number(m[1]), Number(m[2])); if (ctx.lookup(ref) instanceof L.PDFDict) ctx.trailerInfo.Info = ref; }
+  }
+  for (const [ref, o] of ctx.enumerateIndirectObjects()) {
+    if (o instanceof L.PDFRawStream && o.dict.get(N('Type')) === N('XRef')) {
+      const info = o.dict.get(N('Info')); if (!ctx.trailerInfo.Info && info instanceof L.PDFRef && ctx.lookup(info)) ctx.trailerInfo.Info = info;
+      const enc = o.dict.get(N('Encrypt')); if (enc instanceof L.PDFRef) ctx.delete(enc);
+      ctx.delete(ref);
+    } else if (o instanceof L.PDFDict && o.get(N('Filter')) === N('Standard') && o.has(N('O')) && o.has(N('U'))) ctx.delete(ref);
+  }
+  delete ctx.trailerInfo.Encrypt;
+  return true;
+}
+/** pdf.js returns Maps/Sets in recent versions and plain objects/arrays in older ones */
+const entriesOf = (x) => (!x ? [] : x instanceof Map ? [...x.entries()] : Object.entries(x));
+const hasFlag = (x, f) => (!x ? undefined : x instanceof Set ? x.has(f) : Array.isArray(x) ? x.includes(f) : undefined);
 
 async function withJs(path, password, fn) {
   const pdfjs = await pdfjsLib(); const bytes = vfs.read(path); assertPdf(bytes, path);
@@ -109,7 +136,7 @@ async function subset(L, src, indices) {
   return out;
 }
 
-const PW = { password: { type: 'string', description: 'Password, if the PDF is encrypted (user or owner password)' } };
+const PW = { password: { type: 'string', description: 'Password, if the PDF is encrypted (user or owner password). Any PDF this tool writes is unencrypted — re-apply pdf.encrypt if needed' } };
 const PAGES = (extra = '') => ({ type: 'string', description: `1-based page selection such as "1-3,7,10-" ("10-" = to the end; also all, odd, even, last, "-5", reversed "5-1").${extra}` });
 const NOTE_COPY = ' Bookmarks, form-field definitions and document-level attachments are not carried into the new file (page content, links and annotations are).';
 
@@ -142,7 +169,7 @@ function colorOf(L, spec, what = 'color') {
 }
 
 // Standard-14 fonts only know WinAnsi (≈ Latin-1 + a few typographic signs). Everything else is transliterated or becomes "?".
-const TRANSLIT = { '→': '->', '←': '<-', '↔': '<->', '⇒': '=>', '⇐': '<=', '≤': '<=', '≥': '>=', '≠': '!=', '≈': '~', '−': '-', '‐': '-', '‑': '-', '‒': '-', '―': '-', '✓': 'v', '✔': 'v', '✗': 'x', '✘': 'x', '★': '*', '☆': '*', '●': '•', '○': 'o', '■': '•', '□': 'o', '▪': '•', '◦': 'o', '‣': '•', '⁃': '-', '∙': '·', '′': "'", '″': '"', '‹': '<', '›': '>', ' ': ' ', ' ': ' ', ' ': ' ', ' ': ' ', ' ': ' ', ' ': ' ', '​': '', '‌': '', '‍': '', '﻿': '', 'ﬁ': 'fi', 'ﬂ': 'fl', 'ł': 'l', 'Ł': 'L', 'đ': 'd', 'Đ': 'D', 'ı': 'i', '∞': 'inf', '∑': 'Sum', '√': 'sqrt', '≡': '==', '∈': 'in', '∧': '^', '∨': 'v' };
+const TRANSLIT = { '→': '->', '←': '<-', '↔': '<->', '⇒': '=>', '⇐': '<=', '≤': '<=', '≥': '>=', '≠': '!=', '≈': '~', '−': '-', '‐': '-', '‑': '-', '‒': '-', '―': '-', '✓': 'v', '✔': 'v', '✗': 'x', '✘': 'x', '★': '*', '☆': '*', '●': '•', '○': 'o', '■': '•', '□': 'o', '▪': '•', '◦': 'o', '‣': '•', '⁃': '-', '∙': '·', '′': "'", '″': '"', '‹': '<', '›': '>', '\u00a0': ' ', '\u2002': ' ', '\u2003': ' ', '\u2009': ' ', '\u200a': ' ', '\u202f': ' ', '\u200b': '', '\u200c': '', '\u200d': '', '\ufeff': '', 'ﬁ': 'fi', 'ﬂ': 'fl', 'ł': 'l', 'Ł': 'L', 'đ': 'd', 'Đ': 'D', 'ı': 'i', '∞': 'inf', '∑': 'Sum', '√': 'sqrt', '≡': '==', '∈': 'in', '∧': '^', '∨': 'v' };
 function makeCleaner() {
   const sets = new Map(); const stats = { replaced: 0, samples: new Set() };
   const clean = (font, str) => {
@@ -154,7 +181,7 @@ function makeCleaner() {
       if (cp === 9) { out += '    '; continue; }
       if (cp < 32 || cp === 127) continue;
       let r = TRANSLIT[ch];
-      if (r === undefined) { const d = ch.normalize('NFKD').replace(/[̀-ͯ]/g, ''); if (d && [...d].every((c) => set.has(c.codePointAt(0)))) r = d; }
+      if (r === undefined) { const d = ch.normalize('NFKD').replace(/[\u0300-\u036f]/g, ''); if (d && [...d].every((c) => set.has(c.codePointAt(0)))) r = d; }
       if (r === undefined) { r = '?'; stats.replaced++; if (stats.samples.size < 12) stats.samples.add(ch); }
       out += r;
     }
@@ -271,7 +298,7 @@ async function pageLines(pdfjs, page, { order = 'stream', fonts = false } = {}) 
     const n = it.str.length;
     if (cur && cur.ang === ang && Math.abs(v - cur.v) <= 0.45 * Math.max(size, cur.size) && u >= cur.uEnd - 1.2 * Math.max(size, cur.size)) {
       const gap = u - cur.uEnd; const seg = cur.segs[cur.segs.length - 1];
-      if (gap > 1.0 * Math.max(size, cur.size)) cur.segs.push({ x: t[4], text: it.str });
+      if (gap > 0.8 * Math.max(size, cur.size)) cur.segs.push({ x: t[4], text: it.str });
       else seg.text += ((pendingSpace || gap > 0.18 * size) && !/\s$/.test(seg.text) && !/^\s/.test(it.str) ? ' ' : '') + it.str;
     } else {
       flush();
@@ -326,14 +353,21 @@ function pagesToMarkdown(pages, { pageMarkers = false, tables = true } = {}) {
   const hist = new Map();
   for (const p of pages) for (const l of p.lines) if (l.ang === 0) { const k = Math.round(l.size * 2) / 2; hist.set(k, (hist.get(k) || 0) + l.text.length); }
   let body = 10, best = -1; for (const [k, v] of hist) if (v > best) { best = v; body = k; }
-  const headSizes = [...hist.keys()].filter((s) => s >= body * 1.12).sort((a, b) => b - a);
-  const levelOf = (l) => { const k = Math.round(l.size * 2) / 2; const i = headSizes.indexOf(k); return i < 0 ? 0 : Math.min(i + 1, 6); };
+  // Heading levels: font sizes clearly above body size, clustered (sizes within 6% are one level). The first heading
+  // met in the document is taken as its title (level 1); anything larger (figure lettering, cover art) is level 1 too.
+  const big = [...hist.keys()].filter((s) => s >= body * 1.12).sort((a, b) => b - a);
+  const clusters = []; for (const s of big) { const c = clusters[clusters.length - 1]; if (c && c[0] / s <= 1.06) c.push(s); else clusters.push([s]); }
+  let first = null;
+  outer: for (const p of pages) for (const l of p.lines) if (l.ang === 0 && l.text.length <= 200 && l.size >= body * 1.12) { first = Math.round(l.size * 2) / 2; break outer; }
+  const top = Math.max(0, clusters.findIndex((c) => c.includes(first)));
+  const headSizes = clusters.slice(top).map((c) => c[0]);
+  const levelOf = (l) => { const k = Math.round(l.size * 2) / 2; const i = clusters.findIndex((c) => c.includes(k)); return i < 0 ? 0 : Math.min(Math.max(0, i - top) + 1, 6); };
   const boldLevel = Math.min(headSizes.length + 1, 6);
-  const isList = (l) => BULLET.test(l.text) || NUMBERED.test(l.text);
+  const isList = (l) => BULLET.test(l.text) || (NUMBERED.test(l.text) && !(l.text.length <= 120 && (l.bold || l.size >= body * 1.12))); // "1. Introduction" in bold or large type is a heading, not a list item
   const headingLevel = (l, next) => {
     if (l.text.length > 200 || isList(l) || l.segs.length > 2) return 0;
     const lv = levelOf(l); if (lv) return lv;
-    if (l.bold && !l.mono && l.segs.length === 1 && l.text.length <= 90 && !/[.,;:]$/.test(l.text) && /[A-Za-zÀ-￿]/.test(l.text) && (!next || !next.bold)) return boldLevel;
+    if (l.bold && !l.mono && l.segs.length === 1 && l.text.length <= 90 && !/[.,;:]$/.test(l.text) && /[A-Za-z\u00c0-\uffff]/.test(l.text) && (!next || !next.bold)) return boldLevel;
     return 0;
   };
   const esc = (s) => s.replace(/\|/g, '\\|');
@@ -348,6 +382,7 @@ function pagesToMarkdown(pages, { pageMarkers = false, tables = true } = {}) {
       if (l.mono) {
         const blk = [l]; let j = i + 1;
         while (j < L.length && L[j].mono && L[j].y - L[j - 1].y < 4 * l.size && L[j].y > L[j - 1].y) blk.push(L[j++]);
+        if (blk.length === 1 && l.text.length <= 80) { out.push('`' + l.text.replace(/`/g, "'") + '`'); stats.paragraphs++; i = j; continue; } // a lone monospace line (e-mail, URL, identifier)
         const x0 = Math.min(...blk.map((b) => b.x)); const cw = l.size * 0.6;
         out.push('```\n' + blk.map((b) => ' '.repeat(clamp(Math.round((b.x - x0) / cw), 0, 40)) + b.text).join('\n') + '\n```'); stats.codeBlocks++; i = j; continue;
       }
@@ -396,7 +431,7 @@ function pagesToMarkdown(pages, { pageMarkers = false, tables = true } = {}) {
   return { markdown: out.join('\n\n') + '\n', stats, bodySize: body, headingSizes: headSizes.slice(0, 6) };
 }
 function joinWrapped(a, b) {
-  if (/[A-Za-zÀ-ɏ]-$/.test(a) && /^[a-zß-ÿ]/.test(b)) return a.slice(0, -1) + b; // de-hyphenate
+  if (/[A-Za-z\u00c0-\u024f]-$/.test(a) && /^[a-z\u00df-\u00ff]/.test(b)) return a.slice(0, -1) + b; // de-hyphenate
   return `${a} ${b}`;
 }
 
@@ -456,13 +491,13 @@ register({
       const P = pdfjs.PermissionFlag || {};
       return {
         pages: n, version: info.PDFFormatVersion || hv?.[1] || null, encrypted: !!info.EncryptFilterName, encryption: info.EncryptFilterName || undefined,
-        permissions: perms ? { print: perms.includes(P.PRINT), copy: perms.includes(P.COPY), modify: perms.includes(P.MODIFY_CONTENTS), annotate: perms.includes(P.MODIFY_ANNOTATIONS), fillForms: perms.includes(P.FILL_INTERACTIVE_FORMS) } : undefined,
+        permissions: perms ? { print: hasFlag(perms, P.PRINT), copy: hasFlag(perms, P.COPY), modify: hasFlag(perms, P.MODIFY_CONTENTS), annotate: hasFlag(perms, P.MODIFY_ANNOTATIONS), fillForms: hasFlag(perms, P.FILL_INTERACTIVE_FORMS) } : undefined,
         linearized: !!info.IsLinearized, metadata, hasXmp: !!md.metadata,
         pageSizes, pageSizesTruncated: groups.length > 20 || sizeLimit < n || undefined,
         textLayer: { pagesChecked: checked, sampled: checked < n, pagesWithText: checked - noText.length, pagesWithoutText: noText.length ? fmtPages(noText) : '', charsPerPage: Math.round(chars / Math.max(1, checked)), verdict: noText.length === 0 ? 'text' : noText.length === checked ? 'none (scan — OCR needed to get text)' : 'partial (some pages are images only — OCR those)' },
         outline: { present: !!outline?.length, topLevelItems: outline?.length || 0 },
-        forms: { present: !!info.IsAcroFormPresent || !!fields, fields: fields ? Object.keys(fields).length : 0, xfa: !!info.IsXFAPresent, signatures: !!info.IsSignaturesPresent },
-        attachments: { present: !!att && Object.keys(att).length > 0, count: att ? Object.keys(att).length : 0 },
+        forms: { present: !!info.IsAcroFormPresent || entriesOf(fields).length > 0, fields: entriesOf(fields).length, xfa: !!info.IsXFAPresent, signatures: !!info.IsSignaturesPresent },
+        attachments: { present: entriesOf(att).length > 0, count: entriesOf(att).length },
       };
     });
     res.bytes = bytesTotal; res.bytesPerPage = Math.round(bytesTotal / Math.max(1, res.pages));
@@ -621,7 +656,7 @@ register({
       background: { type: 'string', default: '#ffffff', description: 'Paper colour as CSS colour, or "transparent" (PNG/WebP only)' },
       annotations: { type: 'boolean', default: true, description: 'Draw annotations and form-field appearances' },
       maxPages: { type: 'integer', default: 50, minimum: 1, maximum: 1000, description: 'Safety cap on the number of pages rendered in one call' },
-      output: { type: 'string', description: 'VFS path. One page: used as is. Several pages: "{n}" is replaced by the page number, otherwise "-<n>" is inserted before the extension. Default: <input>.p<n>.<ext>' },
+      output: { type: 'string', description: 'VFS path. One page: used as is. Several pages: "{n}" is replaced by the page number (zero-padded to the width of the page count, e.g. 03 of 15), otherwise "-<n>" is inserted before the extension. Default: <input>.p<n>.<ext>' },
       ...PW,
     },
     required: ['input'],
@@ -1176,7 +1211,7 @@ register({
 // ─────────────────────────────────────────────── text / markdown → PDF ──
 function mdInline(text, style = {}) {
   const spans = []; const re = /(`+)([\s\S]+?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|~~([\s\S]+?)~~|\*([^\s*][\s\S]*?)\*|(?<![A-Za-z0-9])_([^\s_][\s\S]*?)_(?![A-Za-z0-9])|(!?)\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|<((?:https?:\/\/|mailto:)[^>\s]+)>/g;
-  let last = 0, m; const push = (t, s) => { if (t) spans.push({ text: t.replace(/(.)/g, '$1'), ...s }); };
+  let last = 0, m; const push = (t, s) => { if (t) spans.push({ text: t.replace(/\ue000(.)/g, '$1'), ...s }); };
   while ((m = re.exec(text))) {
     push(text.slice(last, m.index), style); last = re.lastIndex;
     if (m[1]) push(m[2], { ...style, code: true });
@@ -1189,13 +1224,13 @@ function mdInline(text, style = {}) {
   return spans;
 }
 function mdBlocks(src) {
-  const lines = src.replace(/\r\n?/g, '\n').replace(/\\([\\`*_{}[\]()#+\-.!|>~])/g, '$1').split('\n'); const blocks = []; let i = 0;
+  const lines = src.replace(/\r\n?/g, '\n').replace(/\\([\\`*_{}[\]()#+\-.!|>~])/g, '\ue000$1').split('\n'); const blocks = []; let i = 0;
   const LIST = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/; const cells = (l) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim());
   const TSEP = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/;
   while (i < lines.length) {
     const ln = lines[i]; let m;
     if (!ln.trim()) { i++; continue; }
-    if ((m = /^\s*(```|~~~)/.exec(ln))) { const code = []; i++; while (i < lines.length && !lines[i].trimStart().startsWith(m[1])) code.push(lines[i++].replace(//g, '\\')); i++; blocks.push({ type: 'code', lines: code }); continue; }
+    if ((m = /^\s*(```|~~~)/.exec(ln))) { const code = []; i++; while (i < lines.length && !lines[i].trimStart().startsWith(m[1])) code.push(lines[i++].replace(/\ue000/g, '\\')); i++; blocks.push({ type: 'code', lines: code }); continue; }
     if ((m = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(ln))) { blocks.push({ type: 'h', level: m[1].length, text: m[2] }); i++; continue; }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(ln)) { blocks.push({ type: 'hr' }); i++; continue; }
     if (ln.includes('|') && i + 1 < lines.length && lines[i + 1].includes('-') && lines[i + 1].includes('|') && TSEP.test(lines[i + 1])) { const rows = [cells(ln)]; i += 2; while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(cells(lines[i++])); blocks.push({ type: 'table', rows }); continue; }
@@ -1566,7 +1601,7 @@ register({
 
 register({
   name: 'pdf.forms',
-  description: 'Work with interactive PDF forms (AcroForm): list every field with its type, current value and choices; fill fields from a {name: value} object; and optionally flatten (burn the values into the page so they can no longer be edited). With no values and flatten=false it only lists (no file written). Text values use the form\'s fonts or Helvetica, so characters outside WinAnsi may be rejected. XFA-only forms (Adobe LiveCycle) are not supported.',
+  description: 'Work with interactive PDF forms (AcroForm): list every field with its type, current value and choices; fill fields from a {name: value} object; and optionally flatten (burn the values into the page so they can no longer be edited). With no values and flatten=false it only lists (no file written). Text values use the form\'s fonts or Helvetica, so characters outside WinAnsi may be rejected. Hybrid AcroForm+XFA files work, but the XFA part is dropped from the written file; XFA-only forms (Adobe LiveCycle) are not supported.',
   schema: {
     properties: {
       input: { type: 'string', description: 'VFS path of the PDF' },
@@ -1602,7 +1637,11 @@ register({
       const v = values[name]; const type = typeOf(f);
       try {
         if (type === 'text') f.setText(v === null || v === undefined ? '' : String(v));
-        else if (type === 'checkbox') { if (v === true || v === 'true' || v === 1 || v === 'yes' || v === 'on') f.check(); else f.uncheck(); } else if (type === 'radio' || type === 'dropdown') f.select(String(v)); else if (type === 'list') f.select(Array.isArray(v) ? v.map(String) : [String(v)]);
+        else if (type === 'checkbox') { if (v === true || v === 'true' || v === 1 || v === 'yes' || v === 'on') f.check(); else f.uncheck(); } else if (type === 'radio' || type === 'dropdown' || type === 'list') {
+          const want = type === 'list' && Array.isArray(v) ? v.map(String) : [String(v)]; const opts = f.getOptions(); const editable = type === 'dropdown' && f.isEditable();
+          const bad = want.filter((x) => !opts.includes(x)); if (bad.length && !editable) throw new Error(`"${bad[0]}" is not one of its options`);
+          f.select(type === 'list' ? want : want[0]);
+        }
         else throw new Error(`fields of type ${type} cannot be filled`);
       } catch (e) { throw new Error(`field "${name}" (${type}): ${e.message}${describe(f).options ? ` — options: ${describe(f).options.join(', ')}` : ''}`); }
       filled.push(name);
@@ -1637,9 +1676,16 @@ register({
       return { output: await savePdf(doc, vfs.out(a.output, a.input, 'attached', 'pdf')), attached: a.add.map((p) => ({ name: p.split('/').pop(), bytes: vfs.stat(p).bytes })) };
     }
     return withJs(a.input, a.password, async ({ doc }) => {
-      const att = (await doc.getAttachments()) || {}; const list = Object.values(att); const prefix = a.outputPrefix ?? `${vfs.stemOf(a.input)}.attachments/`; const outputs = [];
-      const items = list.slice(0, 100).map((f) => ({ name: f.filename || f.rawFilename || 'unnamed', bytes: f.content?.length ?? null, description: f.description || undefined }));
-      if (a.extract) for (const f of list.slice(0, 100)) { if (!f.content) continue; const name = String(f.filename || 'unnamed').replace(/[\\/:*?"<>|]+/g, '_'); const ext = vfs.extOf(name); const path = vfs.exists(prefix + name) ? vfs.unique(prefix + (ext ? name.slice(0, -ext.length - 1) : name), ext) : prefix + name; outputs.push(await vfs.write(path, f.content.slice())); }
+      const list = entriesOf(await doc.getAttachments()); const prefix = a.outputPrefix ?? `${vfs.stemOf(a.input)}.attachments/`; const outputs = []; const items = [];
+      for (const [key, f] of list.slice(0, 100)) {
+        let content = f.content; if (!content && doc.getAttachmentContent) { try { content = await doc.getAttachmentContent(key); } catch { /* unreadable */ } }
+        const name = String(f.filename || f.rawFilename || key || 'unnamed');
+        items.push({ name, bytes: content?.length ?? null, description: f.description || undefined });
+        if (!a.extract || !content) continue;
+        const safe = name.replace(/[\\/:*?"<>|]+/g, '_'); const ext = vfs.extOf(safe);
+        const path = vfs.exists(prefix + safe) ? vfs.unique(prefix + (ext ? safe.slice(0, -ext.length - 1) : safe), ext) : prefix + safe;
+        outputs.push(await vfs.write(path, content.slice()));
+      }
       return { count: list.length, attachments: items, truncated: list.length > 100 || undefined, ...(a.extract ? { outputs } : {}) };
     });
   },
@@ -1686,12 +1732,12 @@ register({
   },
   examples: ['pdf.decrypt input=locked.pdf password=s3cret'],
   async run(a) {
-    const { L, doc } = await openLib(a.input, a.password); const wasEncrypted = !!doc.isEncrypted;
-    // rebuild into a fresh document so no trace of the encryption dictionary is left
-    const ctx = doc.context; if (ctx.trailerInfo.Encrypt) { if (ctx.trailerInfo.Encrypt instanceof L.PDFRef) ctx.delete(ctx.trailerInfo.Encrypt); ctx.trailerInfo.Encrypt = undefined; }
+    const { L, doc, wasEncrypted } = await openLib(a.input, a.password);
     const output = await savePdf(doc, vfs.out(a.output, a.input, 'decrypted', 'pdf'));
+    // prove it: both libraries must open the result without a password
     const head = await withJs(output.path, undefined, async ({ doc: d }) => ({ pages: d.numPages, enc: !!(await d.getMetadata()).info?.EncryptFilterName }));
-    if (head.enc) throw new Error('the output is still encrypted — this file uses a scheme the library cannot remove');
+    let reopens = true; try { await L.PDFDocument.load(vfs.read(output.path), { updateMetadata: false }); } catch { reopens = false; }
+    if (head.enc || !reopens) { vfs.rm(output.path); throw new Error('the output is still encrypted — this file uses a scheme the library cannot remove'); }
     return { output, wasEncrypted, pages: head.pages, note: wasEncrypted ? undefined : 'The input was not encrypted; the output is a plain re-save.' };
   },
 });

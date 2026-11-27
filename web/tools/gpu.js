@@ -253,6 +253,8 @@ function describeMessages(messages, asm, code) {
   const lines = code.split('\n');
   return messages.map((m) => {
     const ul = m.lineNum - asm.offset;
+    if (m.lineNum && ul === asm.userLines + 1) return `${m.type} at the end of your code (after line ${asm.userLines}): ${m.message}
+    ${asm.userLines} | ${lines[asm.userLines - 1]}`;
     if (m.lineNum && ul >= 1 && ul <= asm.userLines) return `${m.type} at line ${ul}:${m.linePos}: ${m.message}\n    ${ul} | ${lines[ul - 1]}`;
     return `${m.type} (in the wrapper around your code, module line ${m.lineNum}:${m.linePos}): ${m.message}${/pixel/.test(m.message) ? ' — your code must define `fn pixel(p: vec2i, uv: vec2f) -> vec4f` or be the body of that function' : ''}`;
   });
@@ -297,6 +299,7 @@ register({
     const W = args.width || (args.input ? img.width : 512), H = args.height || (args.input ? img.height : 512);
     rt.checkSize(device, W, H, 'output'); rt.checkSize(device, img.width, img.height, 'input');
     const compute = args.stage === 'compute';
+    if (!/\bfn\s+pixel\s*\(/.test(code) && /(^|\n)\s*(fn|struct)\s/.test(code)) throw new Error('your WGSL declares functions or structs but no `fn pixel(p: vec2i, uv: vec2f) -> vec4f` — define that function (helpers may come before it), or pass only the body of pixel()');
     const asm = assembleShader(code, args.stage);
 
     // compile on its own so that diagnostics come back verbatim, mapped to the caller's line numbers
@@ -388,17 +391,17 @@ register({
 
 // Public CPU tools to time against, tried in order; the first registered one wins. args(p, input) → tool args.
 const CPU_TOOLS = {
-  gaussian: [['image.blur', (p) => ({ sigma: p.sigma })], ['image.gaussian', (p) => ({ sigma: p.sigma })]],
-  convolve: [['image.convolve', (p) => ({ kernel: p.kernel, size: p.size, divisor: p.divisor, bias: p.bias })]],
-  sobel: [['image.sobel', () => ({})], ['image.edges', () => ({})], ['analysis.edges', () => ({})]],
-  grayscale: [['image.grayscale', () => ({})], ['image.gray', () => ({})]],
+  gaussian: [['image.blur', (p) => ({ sigma: p.sigma })]],
+  convolve: [['image.convolve', (p) => ({ kernel: p.kernel, divisor: p.divisor, bias: p.bias })]],
+  sobel: [['image.edges', () => ({ method: 'sobel' })], ['image.sobel', () => ({})]],
+  grayscale: [['image.grayscale', () => ({})]],
   invert: [['image.invert', () => ({})]],
-  threshold: [['image.threshold', (p) => ({ t: p.t })]],
+  threshold: [['image.threshold', (p) => ({ method: 'fixed', t: p.t })]],
   colorMatrix: [['image.colorMatrix', (p) => ({ matrix: p.matrix })]],
-  resize: [['image.resize', (p) => ({ width: p.width, height: p.height, filter: p.filter })]],
-  morph: [['image.morph', (p) => ({ op: p.op, radius: p.radius })], ['image.morphology', (p) => ({ op: p.op, radius: p.radius })]],
+  resize: [['image.resize', (p) => ({ width: p.width, height: p.height, filter: p.filter, fit: 'fill' })]],
+  morph: [['image.morph', (p) => ({ op: p.op, radius: p.radius })]],
   bayer: [['dither.bayer', (p) => ({ levels: p.levels, size: p.size, mono: p.mono })], ['dither.ordered', (p) => ({ levels: p.levels, size: p.size, mono: p.mono })]],
-  bilateral: [['image.bilateral', (p) => ({ sigmaSpace: p.sigmaSpace, sigmaColor: p.sigmaColor })], ['image.denoise', (p) => ({ sigmaSpace: p.sigmaSpace, sigmaColor: p.sigmaColor })]],
+  bilateral: [['image.denoise', (p) => ({ method: 'bilateral', sigmaSpace: p.sigmaSpace, sigmaColor: p.sigmaColor })], ['image.bilateral', (p) => ({ sigmaSpace: p.sigmaSpace, sigmaColor: p.sigmaColor })]],
 };
 const median = (a) => { const s = [...a].sort((x, y) => x - y); return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2; };
 const r1 = (x) => +x.toFixed(2);

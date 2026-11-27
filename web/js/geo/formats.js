@@ -546,7 +546,7 @@ function writePolyline(fc, precision, notes) {
 }
 
 // ───────────────────────────────────────────────────────── shapefile ──
-function ringSigned(r) { let a = 0; for (let i = 0, n = r.length, j = n - 1; i < n; j = i++) a += (r[j][0] - r[i][0]) * (r[j][1] + r[i][1]); return a; } // >0 = clockwise
+function ringSigned(r) { let a = 0; for (let i = 0, n = r.length, j = n - 1; i < n; j = i++) a += (r[i][0] - r[j][0]) * (r[i][1] + r[j][1]); return a; } // >0 = clockwise
 function pip(pt, ring) { let inside = false; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) { const a = ring[i], b = ring[j]; if ((a[1] > pt[1]) !== (b[1] > pt[1]) && pt[0] < (b[0] - a[0]) * (pt[1] - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside; } return inside; }
 export function readShapefile(shp, dbf, prj, cpg, notes = []) {
   const dv = new DataView(shp.buffer, shp.byteOffset, shp.byteLength);
@@ -682,7 +682,7 @@ export async function write(fc, format, opts = {}) {
   const notes = []; let data;
   switch (format) {
     case 'geojson': data = JSON.stringify(fc, null, opts.pretty ? 1 : undefined) + '\n'; break;
-    case 'topojson': data = writeTopo(fc, opts) + '\n'; notes.push(`TopoJSON quantised to ${opts.quantization || 1e6} steps per axis; each ring/line is its own arc (identical arcs are shared, borders between neighbours are not detected)`); break;
+    case 'topojson': data = writeTopo(fc, opts) + '\n'; notes.push(`TopoJSON quantised to ${opts.quantization || 1e6} steps per axis; each ring/line is its own arc (identical arcs are shared, borders between neighbours are not detected); elevation is not kept`); break;
     case 'kml': data = writeKML(fc, opts); break;
     case 'kmz': data = await zip({ 'doc.kml': new TextEncoder().encode(writeKML(fc, opts)) }); break;
     case 'gpx': data = writeGPX(fc, opts, notes); break;

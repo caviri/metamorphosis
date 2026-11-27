@@ -14,6 +14,9 @@ let loading = null;
 /** Marks an output buffer argument: K.call('histogram', data, w, h, o = out(Uint32Array, 1280)); afterwards o.value holds a copy. */
 export class Out { constructor(Type, length) { this.Type = Type; this.length = length; this.value = null; } }
 export const out = (Type, length) => new Out(Type, length);
+/** Marks a buffer the kernel modifies in place: copied in, and copied back into .value (same type) after the call. */
+export class InOut { constructor(data) { this.data = data; this.value = null; } }
+export const io = (data) => new InOut(data);
 
 class Kernel {
   constructor(x) { this.x = x; }
@@ -38,6 +41,11 @@ class Kernel {
         if (a === null || a === undefined) return 0;
         if (typeof a === 'number') return a;
         if (typeof a === 'boolean') return a ? 1 : 0;
+        if (a instanceof InOut) {
+          const d = a.data; const p = this.alloc(d.byteLength); held.push([p, d.byteLength, a]);
+          new Uint8Array(this.x.memory.buffer, p, d.byteLength).set(new Uint8Array(d.buffer, d.byteOffset, d.byteLength));
+          return p;
+        }
         if (a instanceof Out) { const bytes = a.length * a.Type.BYTES_PER_ELEMENT; const p = this.alloc(bytes); held.push([p, bytes, a]); return p; }
         if (ArrayBuffer.isView(a)) {
           const p = this.alloc(a.byteLength); held.push([p, a.byteLength, null]);
@@ -48,7 +56,7 @@ class Kernel {
       });
       const r = fn(...argv);
       const buf = this.x.memory.buffer;
-      for (const [p, bytes, o] of held) if (o) o.value = new o.Type(buf.slice(p, p + bytes));
+      for (const [p, bytes, o] of held) if (o) o.value = new (o instanceof InOut ? o.data.constructor : o.Type)(buf.slice(p, p + bytes));
       return r;
     } catch (e) {
       if (e instanceof WebAssembly.RuntimeError) {

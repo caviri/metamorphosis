@@ -250,7 +250,7 @@ pub unsafe extern "C" fn edges(s: *const u8, w: u32, h: u32, d: *mut u8, method:
 }
 
 /// Canny on a luma plane. Returns a 0/1 mask. Thresholds are on sobel magnitude / 4 (a full black→white step = 255).
-/// low/high < 0 → automatic: high = the magnitude below which 70 % of pixels fall, low = 0.4·high (MATLAB's rule).
+/// high < 0 → automatic: high = Otsu's threshold of the gradient-magnitude histogram; low < 0 → 0.4·high.
 pub(crate) fn canny_mask(l: &mut Vec<f32>, w: usize, h: usize, sigma: f32, mut low: f32, mut high: f32) -> (Vec<u8>, f32, f32) {
     if sigma > 0.0 {
         let k = gauss_kernel(sigma);
@@ -268,14 +268,22 @@ pub(crate) fn canny_mask(l: &mut Vec<f32>, w: usize, h: usize, sigma: f32, mut l
         for &m in &mag {
             hist[((m / mx * (BINS - 1) as f32) as usize).min(BINS - 1)] += 1;
         }
-        let target = (0.7 * (w * h) as f64) as u64;
-        let mut acc = 0u64;
-        let mut bin = BINS - 1;
+        // Otsu's threshold of the gradient-magnitude histogram separates "edge" from "not edge"
+        let total = (w * h) as f64;
+        let sum_all: f64 = hist.iter().enumerate().map(|(i, &c)| i as f64 * c as f64).sum();
+        let (mut wb, mut sum_b, mut best, mut bin) = (0f64, 0f64, -1f64, 0usize);
         for (i, &c) in hist.iter().enumerate() {
-            acc += c as u64;
-            if acc > target {
+            wb += c as f64;
+            let wf = total - wb;
+            if wb == 0.0 || wf == 0.0 {
+                continue;
+            }
+            sum_b += i as f64 * c as f64;
+            let dm = sum_b / wb - (sum_all - sum_b) / wf;
+            let var = wb * wf * dm * dm;
+            if var > best {
+                best = var;
                 bin = i;
-                break;
             }
         }
         high = ((bin + 1) as f32 / BINS as f32 * mx).max(1.0);
