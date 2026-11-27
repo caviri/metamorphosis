@@ -1,0 +1,64 @@
+# μεταμόρφωσις
+
+> A static site of in-browser tools for agents: image processing and analysis, PDF, video, audio, maps, tabular
+> data, documents, raw bytes. Everything runs in the page on WebAssembly, with WebGPU when the browser has it and
+> CPU otherwise. No server, no upload: files never leave the browser.
+
+## How to use it
+
+Open a page, wait for it, call tools:
+
+    await M.ready
+    await M.call('sys.rooms')              // the rooms (pages) and what each holds
+    await M.call('sys.tools')              // tools of the room you are in
+    await M.call('sys.help', {tool: 'pdf.merge'})     // full input schema of one tool
+    await M.call('pdf.merge', {inputs: ['a.pdf', 'b.pdf']})
+
+`M.call(name, args)` always resolves to `{ok: true, tool, ms, result}` or `{ok: false, tool, ms, error}`.
+The same tools are registered with WebMCP (`document.modelContext`), named with `_` instead of `.` (`pdf_merge`).
+The last result is mirrored in the DOM at `script#last-result`; the log is `#log`; previews are painted in `#viewport`.
+
+## Rooms
+
+The tools are split across pages so that no page puts hundreds of tool definitions in your context.
+Each room exposes one family plus `fs.*` and `sys.*`. Go to the room that has what you need.
+
+- [image/](image/): raster transforms and filters — convert, resize, crop, blur, edges, morphology, colour
+- [analysis/](analysis/): image measurement and forensics — histogram, stats, palette, sharpness, SSIM/PSNR, perceptual hash, FFT, ELA, components, corners, lines, LSB
+- [synth/](synth/): synthetic images, dithering, WebGPU playground — noise, fractals, automata, test cards, palettes, custom WGSL shaders
+- [vision/](vision/): OCR, barcodes and QR codes, neural image classification
+- [pdf/](pdf/): inspect, extract text, render pages, merge, split, rotate, compress, watermark, build from images or markdown
+- [video/](video/): probe, convert, compress, trim, frames, contact sheets, GIF, audio extraction
+- [audio/](audio/): convert, edit, loudness and spectral stats, spectrogram and waveform images, pitch, tempo, synthesis, DTMF, Morse
+- [geo/](geo/): GeoJSON / KML / GPX / TopoJSON / WKT / shapefile conversion, simplify, measure, reproject, render maps
+- [data/](data/): CSV / JSON / YAML / TOML / XML / XLSX / Markdown tables — convert, query, stats, schema, diff, charts
+- [bytes/](bytes/): identify by magic number, entropy, strings, binary diff, hashes, encodings, zip / tar / gzip
+- [doc/](doc/): docx / pptx / epub / html / ipynb / eml to Markdown and back, subtitles, chunking, token estimates, grep, diff
+- [claude/](claude/): make any file model-ready — `claude.inspect` tells you what is wrong with a file, `claude.pack` fixes it
+
+A tool from another room still runs if you call it by its full name (its code is loaded on demand); it is just
+not listed or offered over WebMCP outside its room.
+
+## Files
+
+Tools read and write a virtual file system by path. It persists in the browser (IndexedDB) across rooms and reloads.
+
+- in: `fs.write {path, text | base64}` (use `append: true` to send a large file in chunks), `fs.fetch {url}` (CORS permitting), or a human drops/pastes a file on the page
+- out: `fs.read {path, encoding: text | base64 | dataurl | hex, offset, length}` (256 KiB per call), `fs.download {path}`
+- look: `fs.preview {path}` paints the file in `#viewport` — take a screenshot to see it
+- manage: `fs.list`, `fs.stat`, `fs.cp`, `fs.mv`, `fs.rm`
+
+Tools that produce a file return `output: {path, mime, bytes, …}` (or `outputs: [...]`). Pass an `output` argument to
+choose the name; otherwise it is derived from the input (`cat.png` → `cat.blur.png`).
+
+## Conventions
+
+- Results are small JSON. Pixels, audio, documents and long text are written to files, never returned inline.
+- Tools with a GPU path take `backend: auto | gpu | cpu` and report the backend they used. `sys.env` says what the machine has.
+- Heavy engines (ffmpeg, OCR, neural models, PDF renderer) download on first use; the first call is slower.
+- Terminal: type `tool key=value …` in `#prompt`; `a | b` pipes a's output file into b; `man <tool>` shows a schema.
+  `?x=<command>;<command>` in the URL runs commands at load.
+
+## Machine-readable
+
+- [tools.json](tools.json): every tool of every room with its input schema

@@ -1,0 +1,103 @@
+:root {
+  --bg: #040704; --bg2: #0a100a; --line: #1c2e1b; --dim: #4c7a48; --fg: #9be892; --hi: #c9ffc2; --phos: #7dff6a;
+  --warn: #ffc857; --err: #ff5d73; --key: #6ad7ff; --str: #e8d48b; --num: #ff9ecf;
+  --mono: "Berkeley Mono", "JetBrains Mono", "Cascadia Code", "Cascadia Mono", "IBM Plex Mono", Consolas, "DejaVu Sans Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--mono);
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden;
+  font-variant-ligatures: none; -webkit-font-smoothing: antialiased;
+}
+/* scanlines: a 1-bit ordered veil over everything */
+body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9;
+  background: repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0, 0, 0, .16) 2px 3px);
+  mix-blend-mode: multiply;
+}
+::selection { background: var(--phos); color: var(--bg); }
+a { color: var(--key); text-decoration: none; } a:hover { text-decoration: underline; }
+code { color: var(--hi); }
+:focus-visible { outline: 1px dashed var(--phos); outline-offset: 2px; }
+::-webkit-scrollbar { width: 8px; height: 8px; } ::-webkit-scrollbar-thumb { background: var(--line); } ::-webkit-scrollbar-thumb:hover { background: var(--dim); }
+
+/* ── head ── */
+#head { position: relative; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line); min-height: 86px; overflow: hidden; }
+#veil { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; opacity: .5; }
+.mast, #chips { position: relative; z-index: 1; }
+.mast { background: var(--bg); padding: 4px 10px 5px; box-shadow: 4px 4px 0 var(--line); }
+h1 { margin: 0; font-size: clamp(20px, 3.4vw, 34px); font-weight: 400; letter-spacing: .34em; color: var(--hi); text-shadow: 0 0 12px rgba(125, 255, 106, .55); text-wrap: balance; }
+.epi { margin: 2px 0 0; color: var(--dim); letter-spacing: .12em; font-size: 12px; }
+#chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 0; }
+#chips div { display: flex; background: var(--bg); border: 1px solid var(--line); }
+#chips dt { padding: 1px 6px; color: var(--bg); background: var(--dim); }
+#chips dd { margin: 0; padding: 1px 8px; color: var(--hi); font-variant-numeric: tabular-nums; }
+#chips dd.off { color: var(--warn); }
+
+#rooms { display: flex; flex-wrap: wrap; gap: 0 2px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--bg2); }
+#rooms a { padding: 2px 8px; color: var(--dim); white-space: nowrap; }
+#rooms a span { color: var(--fg); }
+#rooms a:hover { background: var(--line); color: var(--hi); text-decoration: none; }
+#rooms a[aria-current] { background: var(--phos); color: var(--bg); } #rooms a[aria-current] span { color: var(--bg); }
+
+/* ── body ── */
+main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(280px, 1fr); min-height: 0; }
+#term { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; border-right: 1px solid var(--line); }
+#log { overflow: auto; padding: 10px 16px 6px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; scrollbar-gutter: stable; }
+#log > div { margin: 0 0 2px; }
+.cmd { color: var(--hi); margin-top: 8px !important; } .cmd::before { content: "μ> "; color: var(--phos); }
+.sys { color: var(--dim); } .warn { color: var(--warn); } .err { color: var(--err); } .err::before { content: "✗ "; }
+.ok { color: var(--dim); } .note { color: var(--dim); font-style: italic; }
+.out { border-left: 1px solid var(--line); padding-left: 10px; margin-left: 2px !important; }
+.j-k { color: var(--key); } .j-s { color: var(--str); } .j-n { color: var(--num); } .j-b { color: var(--warn); } .j-z { color: var(--dim); }
+.roomlist { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 2px 14px; white-space: normal !important; }
+.banner { color: var(--phos); line-height: 1.15; white-space: pre; overflow: hidden; }
+.fold { color: var(--dim); cursor: pointer; background: none; border: 0; font: inherit; padding: 0; } .fold:hover { color: var(--hi); }
+
+#line { position: relative; display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--line); background: var(--bg2); }
+#line label { color: var(--phos); }
+#prompt { flex: 1; min-width: 0; background: none; border: 0; color: var(--hi); font: inherit; caret-color: var(--phos); outline: none; }
+#prompt::placeholder { color: var(--line); }
+#hints { position: absolute; left: 16px; right: 16px; bottom: 100%; margin: 0; padding: 4px 0; list-style: none; background: var(--bg2); border: 1px solid var(--line); max-height: 40vh; overflow: auto; z-index: 5; }
+#hints li { padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; color: var(--dim); }
+#hints li b { color: var(--hi); font-weight: 400; } #hints li.on, #hints li:hover { background: var(--line); }
+
+#side { display: grid; grid-template-rows: minmax(0, 1.5fr) minmax(0, 1fr); min-height: 0; }
+#side section { display: flex; flex-direction: column; min-height: 0; }
+#side section + section { border-top: 1px solid var(--line); }
+h2 { margin: 0; padding: 4px 12px; font-size: 12px; font-weight: 400; letter-spacing: .2em; color: var(--dim); background: var(--bg2); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; }
+h2 span:last-child { letter-spacing: 0; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#viewport {
+  flex: 1; min-height: 0; overflow: auto; display: grid; place-items: center; padding: 10px;
+  background-color: var(--bg);
+  background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 8px 8px;
+}
+#viewport > img, #viewport > canvas, #viewport > video { max-width: 100%; max-height: 100%; object-fit: contain; image-rendering: auto; box-shadow: 0 0 0 1px var(--line); background: #000; }
+#viewport > .px { image-rendering: pixelated; }
+#viewport > audio { width: 100%; filter: invert(1) hue-rotate(60deg) saturate(2); }
+#viewport > pre { place-self: stretch; margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--fg); background: var(--bg); padding: 6px; }
+.void { color: var(--dim); background: var(--bg); padding: 2px 8px; }
+#pick { font: inherit; color: var(--bg); background: var(--phos); border: 0; padding: 0 6px; cursor: pointer; }
+#view-meta { margin: 0; padding: 2px 12px; color: var(--dim); border-top: 1px solid var(--line); min-height: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+#vfs { margin: 0; padding: 4px 0; list-style: none; overflow: auto; flex: 1; }
+#vfs li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; padding: 0 12px; cursor: pointer; font-variant-numeric: tabular-nums; }
+#vfs li:hover, #vfs li.on { background: var(--line); color: var(--hi); }
+#vfs li span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#vfs li span + span { color: var(--dim); }
+#vfs:empty::after { content: "κενόν"; display: block; padding: 4px 12px; color: var(--line); }
+
+footer { display: flex; justify-content: space-between; gap: 12px; padding: 3px 16px; border-top: 1px solid var(--line); color: var(--dim); background: var(--bg2); white-space: nowrap; overflow: hidden; }
+#busy { color: var(--warn); overflow: hidden; text-overflow: ellipsis; }
+body.drag #viewport { outline: 1px dashed var(--phos); outline-offset: -6px; }
+
+@media (max-width: 820px) {
+  body { overflow: auto; height: auto; grid-template-rows: auto auto auto auto; }
+  main { grid-template-columns: minmax(0, 1fr); }
+  #term { border-right: 0; height: 62vh; }
+  #side { grid-template-rows: minmax(240px, 46vh) minmax(120px, auto); border-top: 1px solid var(--line); }
+  #head { flex-direction: column; align-items: flex-start; }
+  #chips { justify-content: flex-start; }
+  footer span:first-child { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { h1 { text-shadow: none; } }

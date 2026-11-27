@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="grc">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>μεταμόρφωσις · νοῦς</title>
+<meta name="description" content="μεταμόρφωσις / claude — make any file model-ready: fit images, PDFs, audio, video, maps and tables to what a Claude model can ingest. In-browser tools for agents: window.M.call(name, args) and WebMCP.">
+<meta name="agent-entry" content="await M.ready; await M.call('sys.tools'); await M.call(name, args)">
+<meta name="color-scheme" content="dark">
+<meta name="mu-root" content="../">
+<meta name="mu-room" content="claude">
+<link rel="alternate" type="text/plain" href="../llms.txt" title="agent instructions">
+<link rel="alternate" type="application/json" href="../tools.json" title="tool manifest">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23040704'/%3E%3Ctext x='8' y='13' font-size='14' text-anchor='middle' fill='%237dff6a' font-family='monospace'%3E%CE%BC%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="../css/term.css">
+</head>
+<body>
+<!--
+  ἄνθρωπος μηδεὶς εἰσίτω.
+
+  AGENT: this page is for you. Nothing here needs a server.
+    await M.ready                         // all tool modules loaded
+    await M.call('sys.rooms')             // the pages of this site; each holds ONE tool family
+    await M.call('sys.tools')             // the tools of the room you are in
+    await M.call('sys.help', {tool})      // schema of one tool
+    await M.call(name, args)              // → {ok, tool, ms, result | error}
+  Tools are split across rooms (image/ analysis/ synth/ vision/ pdf/ video/ audio/ geo/ data/ bytes/ doc/ claude/)
+  so no page floods your context. Navigate to a room to get its tools; files persist across rooms.
+  Files live in a VFS (M.vfs). fs.write / fs.fetch put bytes in, fs.read takes them out,
+  fs.preview paints them in #viewport. The same tools are registered on document.modelContext (WebMCP)
+  with "." replaced by "_" — only the current room's tools. You may also type into #prompt, or load  ?x=<command>;<command>  to run on boot.
+-->
+<header id="head">
+  <canvas id="veil" aria-hidden="true"></canvas>
+  <div class="mast">
+    <h1 title="metamorphosis">ΜΕΤΑΜΟΡΦΩΣΙΣ</h1>
+    <p class="epi">πάντα μεταβάλλεται · οὐδὲν ἀπόλλυται</p>
+  </div>
+  <dl id="chips" aria-label="machine state">
+    <div><dt>gpu</dt><dd id="chip-gpu">…</dd></div>
+    <div><dt>wasm</dt><dd id="chip-wasm">…</dd></div>
+    <div><dt>webmcp</dt><dd id="chip-mcp">…</dd></div>
+    <div><dt>ὄργανα</dt><dd id="chip-tools">0</dd></div>
+  </dl>
+</header>
+<nav id="rooms" aria-label="rooms"></nav>
+
+<main>
+  <section id="term" aria-label="terminal">
+    <div id="log" role="log" aria-live="polite" tabindex="0"></div>
+    <form id="line" autocomplete="off">
+      <label for="prompt">μ&gt;</label>
+      <input id="prompt" name="prompt" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="command" placeholder="sys.tools">
+      <ul id="hints" hidden></ul>
+    </form>
+  </section>
+
+  <aside id="side">
+    <section id="view" aria-label="viewport">
+      <h2><span>ὄψις</span><span id="view-name">∅</span></h2>
+      <div id="viewport"><p class="void">drop a file · paste · or <button type="button" id="pick">put</button></p></div>
+      <p id="view-meta"></p>
+    </section>
+    <section id="files" aria-label="virtual file system">
+      <h2><span>ὕλη</span><span id="files-sum">0 · 0B</span></h2>
+      <ul id="vfs"></ul>
+    </section>
+  </aside>
+</main>
+
+<footer>
+  <span>ἄνθρωπος μηδεὶς εἰσίτω</span>
+  <span id="busy" hidden>▚ <span id="busy-what"></span></span>
+  <span><a href="../llms.txt">llms.txt</a> · <a href="../tools.json">tools.json</a> · <code>window.M</code></span>
+</footer>
+
+<input type="file" id="file" multiple hidden>
+<script type="application/json" id="last-result">null</script>
+<script type="module" src="../js/main.js"></script>
+</body>
+</html>
