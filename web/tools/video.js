@@ -1331,6 +1331,404 @@ register({
   run: (a, ctx) => audioTranscode(a, ctx, 'audio'),
 });
 
+// ─────────────────────────────────────────────── scan · ask · web ──
+// video.scan looks at the picture and the sound to find what can go: dead time at both ends (black, blank or frozen
+// frames with nothing audible) and black bars around the picture. video.ask hands the same decision to the human at
+// the page. video.web does the cut and returns a small, streamable file.
+const SCAN_W = 480, THUMB_W = 64;
+const sub = (ctx, lo, hi) => ({ ...ctx, progress: (f, note) => ctx.progress(f >= 0 ? lo + (hi - lo) * f : f, note) });
+const dist = (p, q) => { let s = 0; for (let i = 0; i < p.length; i++) s += Math.abs(p[i] - q[i]); return s / p.length; };
+/** measure(img) → {mean, std, bright, thumb}; with bars=true the frame is also folded into the per-row / per-column maxima */
+function analyser(sv, maxW = SCAN_W) {
+  const w = Math.min(sv.width, maxW), h = Math.max(2, Math.round(sv.height * w / sv.width));
+  const tw = Math.min(THUMB_W, w), th = Math.max(2, Math.round(h * tw / w));
+  const c = canvasOf(w, h), g = c.getContext('2d', { willReadFrequently: true });
+  const tc = canvasOf(tw, th), tg = tc.getContext('2d', { willReadFrequently: true });
+  const rowHi = new Uint8Array(h), colHi = new Uint8Array(w);
+  return {
+    size: { width: w, height: h }, rowHi, colHi,
+    measure(img, bars = false) {
+      g.drawImage(img, 0, 0, w, h);
+      const d = g.getImageData(0, 0, w, h).data; let s = 0, s2 = 0, br = 0;
+      for (let y = 0, i = 0; y < h; y++) {
+        let hi = 0;
+        for (let x = 0; x < w; x++, i += 4) {
+          const v = (54 * d[i] + 183 * d[i + 1] + 19 * d[i + 2]) >> 8;
+          s += v; s2 += v * v; if (v > 40) br++;
+          if (v > hi) hi = v;
+          if (bars && v > colHi[x]) colHi[x] = v;
+        }
+        if (bars && hi > rowHi[y]) rowHi[y] = hi;
+      }
+      const n = w * h, mean = s / n;
+      tg.drawImage(c, 0, 0, tw, th);
+      const t = tg.getImageData(0, 0, tw, th).data, thumb = new Uint8Array(tw * th);
+      for (let i = 0, j = 0; j < thumb.length; i += 4, j++) thumb[j] = (54 * t[i] + 183 * t[i + 1] + 19 * t[i + 2]) >> 8;
+      return { mean, std: Math.sqrt(Math.max(0, s2 / n - mean * mean)), bright: br / n, thumb };
+    },
+  };
+}
+/** lengths of the runs of never-brighter-than-`level` lines at both ends of a per-line maximum → [leading, trailing] */
+function darkRuns(hi, level) {
+  let a = 0; while (a < hi.length && hi[a] <= level) a++;
+  if (a >= hi.length) return [0, 0];
+  let b = 0; while (hi[hi.length - 1 - b] <= level) b++;
+  return [a, b];
+}
+/** RMS of the primary audio track in 50 ms windows (first two channels) → {win, rms, peakDb} | null when it cannot be decoded here */
+async function audioEnvelope(path, src) {
+  if (!src.audio || src.backend !== 'webcodecs' || !src.audio.canDecode) return null;
+  const lib = await mb(); const input = await openInput(path);
+  try {
+    const at = await input.getPrimaryAudioTrack(); if (!at) return null;
+    const win = 0.05, n = Math.ceil(src.duration / win) + 2, sq = new Float64Array(n), cnt = new Uint32Array(n); let buf = new Float32Array(0), peak = 0;
+    for await (const s of new lib.AudioSampleSink(at).samples()) {
+      const frames = s.numberOfFrames, sr = s.sampleRate, t0 = s.timestamp, chs = Math.min(2, s.numberOfChannels);
+      if (buf.length < frames) buf = new Float32Array(frames);
+      for (let c = 0; c < chs; c++) {
+        s.copyTo(buf.subarray(0, frames), { planeIndex: c, format: 'f32-planar' });
+        for (let i = 0; i < frames; i += 2) { const k = Math.floor((t0 + i / sr) / win); if (k < 0 || k >= n) continue; const v = buf[i]; sq[k] += v * v; cnt[k]++; if (v > peak) peak = v; else if (-v > peak) peak = -v; }
+      }
+      s.close();
+    }
+    const rms = new Float32Array(n); for (let i = 0; i < n; i++) rms[i] = cnt[i] ? Math.sqrt(sq[i] / cnt[i]) : 0;
+    return { win, rms, peakDb: peak > 0 ? r3(20 * Math.log10(peak)) : null };
+  } finally { input.dispose(); }
+}
+async function scanVideo(a, ctx, src) {
+  const sv = src.video, fps = sv.fps || 30, dur = src.duration, first = sv.start > 0 ? sv.start : 0, lastT = Math.max(first, dur - 1 / fps);
+  const blackLevel = a.blackLevel ?? 20, motion = a.motion ?? 0.35, minDead = a.minDead ?? 0.4, pad = a.pad ?? 0.1, barLevel = a.barLevel ?? 20;
+  const n = Math.max(2, Math.min(a.samples ?? 240, Math.ceil((lastT - first) / 0.25) + 1, Math.floor((lastT - first) * fps) + 1));
+  const step = (lastT - first) / (n - 1) || 1 / fps;
+  const times = []; for (let i = 0; i < n; i++) times.push(r3(first + i * step));
+  const an = analyser(sv), raw = [];
+  const g = await grabFrames(a.input, src, times, an.size, a, ctx, (img, t, i) => { raw[i] = { t, ...an.measure(img, true) }; }, [0, 0.75]);
+  const S = raw.filter(Boolean);
+  if (S.length < 2) throw new Error('could not decode enough frames to analyse this video');
+  S.forEach((s, i) => { s.diff = i ? dist(s.thumb, S[i - 1].thumb) : null; }); S[0].diff = S[1].diff;
+  const flat = (f) => (f.mean < blackLevel && f.bright < 0.02 ? 'black' : f.std < 5 ? 'blank' : null);
+  // sound: a still or black picture with something audible over it is not dead time
+  let env = null, audioWhy = !src.audio ? 'no audio track' : a.ignoreAudio ? 'ignoreAudio=true' : null;
+  if (!audioWhy) { try { env = await audioEnvelope(a.input, src); if (!env) audioWhy = 'the audio track cannot be decoded by this browser'; } catch (e) { audioWhy = `audio decoding failed: ${msgOf(e)}`; } }
+  ctx.progress(0.82, 'audio');
+  const thr = 10 ** ((a.silenceDb ?? -45) / 20);
+  const bins = (t0, t1) => [Math.max(0, Math.floor(t0 / env.win)), Math.min(env.rms.length - 1, Math.floor(t1 / env.win))];
+  const loud = (t0, t1) => { if (!env) return false; const [i0, i1] = bins(t0, t1); for (let i = i0; i <= i1; i++) if (env.rms[i] > thr) return true; return false; };
+  for (const s of S) { s.kind = flat(s) || (s.diff < motion ? 'frozen' : null); s.quiet = !loud(s.t - step / 2, s.t + step / 2); s.dead = !!s.kind && s.quiet; }
+
+  // where the dead lead-in ends and the dead tail begins, narrowed to one frame by looking at the frames in between
+  const hush = { ...ctx, progress() {} };
+  const edge = async (lo, hi, ref, lead) => {
+    for (let pass = 0; pass < 3 && hi - lo > 1.5 / fps; pass++) {
+      const m = Math.min(32, Math.max(1, Math.round((hi - lo) * fps) - 1)), ts = [], F = [];
+      for (let i = 1; i <= m; i++) ts.push(r3(lo + (hi - lo) * i / (m + 1)));
+      await grabFrames(a.input, src, ts, an.size, a, hush, (img, t, i, actual) => { const f = an.measure(img); F.push({ t: typeof actual === 'number' && Math.abs(actual - t) < 1 ? actual : t, dead: !!flat(f) || dist(f.thumb, ref.thumb) < Math.max(motion * 1.5, 0.5) }); });
+      const j = F.findIndex((f) => f.dead !== lead);
+      if (j < 0) { if (F.length) lo = F[F.length - 1].t; } else { hi = F[j].t; if (j > 0) lo = F[j - 1].t; }
+    }
+    return hi;
+  };
+  const k = S.findIndex((s) => !s.dead); let m = S.length - 1; while (m >= 0 && S[m].dead) m--;
+  const why = (list) => { const c = {}; for (const s of list) c[s.kind] = (c[s.kind] || 0) + 1; const top = Object.entries(c).sort((x, y) => y[1] - x[1])[0]?.[0]; return top ? `${top}${env ? ' and silent' : ''}` : null; };
+  let start = first, end = dur, head = null, tail = null, allDead = k < 0;
+  if (!allDead) {
+    if (k > 0) {
+      let t = await edge(S[k - 1].t, S[k].t, S[k - 1], true);
+      if (env) { const [i0, i1] = bins(S[k - 1].t + step / 2, t); for (let i = i0; i <= i1; i++) if (env.rms[i] > thr) { t = Math.min(t, i * env.win); break; } }
+      t = Math.max(first, t - pad);
+      if (t - first >= minDead) { start = t; head = { seconds: r3(t - first), why: why(S.slice(0, k)) }; }
+    }
+    ctx.progress(0.9, 'edges');
+    if (m < S.length - 1) {
+      let t = await edge(S[m].t, S[m + 1].t, S[m + 1], false);
+      if (env) { const [i0, i1] = bins(t, S[m + 1].t - step / 2); for (let i = i1; i >= i0; i--) if (env.rms[i] > thr) { t = Math.max(t, (i + 1) * env.win); break; } }
+      t = Math.min(dur, t + pad);
+      if (dur - t >= minDead) { end = t; tail = { seconds: r3(dur - t), why: why(S.slice(m + 1)) }; }
+    }
+  }
+  // every dead stretch, also the ones in the middle (edges there are only as fine as the sampling step)
+  const dead = [];
+  for (let i = 0; i < S.length; i++) {
+    if (!S[i].dead) continue; let j = i; while (j + 1 < S.length && S[j + 1].dead) j++;
+    const seg = { start: r3(i ? (S[i - 1].t + S[i].t) / 2 : first), end: r3(j < S.length - 1 ? (S[j].t + S[j + 1].t) / 2 : dur), why: why(S.slice(i, j + 1)) };
+    if (i === 0 && head) seg.end = r3(start + pad); if (j === S.length - 1 && tail) seg.start = r3(end - pad);
+    if (seg.end - seg.start >= minDead) dead.push(seg);
+    i = j;
+  }
+
+  // black bars: lines that never rise above barLevel in any sampled frame, refined on a few full-size frames
+  const W = sv.width, H = sv.height, sx = W / an.size.width, sy = H / an.size.height;
+  let [top, bottom] = darkRuns(an.rowHi, barLevel), [left, right] = darkRuns(an.colHi, barLevel);
+  if ((top || bottom || left || right) && (sx > 1.01 || sy > 1.01)) {
+    const fine = analyser(sv, Math.min(W, 4096)), fx = W / fine.size.width, fy = H / fine.size.height;
+    const best = S.filter((s) => !flat(s)).sort((p, q) => q.std - p.std).slice(0, 3).map((s) => s.t).sort((p, q) => p - q);
+    let ok = 0;
+    if (best.length) await grabFrames(a.input, src, best, fine.size, a, hush, (img) => { fine.measure(img, true); ok++; }).catch(() => {});
+    const [ft, fb] = ok ? darkRuns(fine.rowHi, barLevel) : [0, 0], [fl, fr] = ok ? darkRuns(fine.colHi, barLevel) : [0, 0];
+    const fit = (coarse, exact, sc, fs) => (!coarse ? 0 : !ok ? Math.ceil(coarse * sc) : Math.round(Math.min((coarse + 1) * sc, Math.max((coarse - 1) * sc, exact * fs))));
+    top = fit(top, ft, sy, fy); bottom = fit(bottom, fb, sy, fy); left = fit(left, fl, sx, fx); right = fit(right, fr, sx, fx);
+  }
+  // real letterboxing is symmetric; a dark edge on one side only (a dark interface, a night sky) is picture, not a bar
+  const found = { top, bottom, left, right };
+  const pair = (p, q, dim) => (Math.min(p, q) >= Math.max(4, dim * 0.01) && Math.abs(p - q) <= Math.max(8, 0.2 * Math.max(p, q)) ? [p, q] : [0, 0]);
+  [top, bottom] = pair(top, bottom, H); [left, right] = pair(left, right, W);
+  const lopsided = found.top + found.bottom + found.left + found.right > top + bottom + left + right;
+  const cx = Math.ceil(left / 2) * 2, cy = Math.ceil(top / 2) * 2, cw = Math.floor((W - cx - right) / 2) * 2, ch = Math.floor((H - cy - bottom) / 2) * 2;
+  const bars = top + bottom + left + right > 0 && cw >= 16 && ch >= 16;
+
+  const med = S.map((s) => s.diff).sort((p, q) => p - q)[S.length >> 1], cuts = [];
+  for (let i = 1; i < S.length && cuts.length < 40; i++) if (S[i].diff > Math.max(18, med * 5) && !S[i].dead && !S[i - 1].dead) cuts.push(r3((S[i - 1].t + S[i].t) / 2));
+  const mark = (s) => (s.dead ? (s.kind === 'black' ? '.' : s.kind === 'blank' ? '_' : '=') : s.kind ? '~' : '#');
+  const tl = S.length <= 120 ? S.map(mark).join('') : Array.from({ length: 120 }, (_, i) => mark(S[Math.floor(i * S.length / 120)])).join('');
+  return {
+    duration: r3(dur), width: W, height: H, fps: r3(fps), sampled: S.length, step: r3(step),
+    trim: { needed: !!(head || tail), start: r3(start === first ? 0 : start), end: r3(end), duration: r3(end - (start === first ? 0 : start)), head, tail, ...(allDead ? { note: 'every sampled frame is black, blank or frozen with nothing audible — there is no live part to keep, so nothing is suggested' } : {}) },
+    crop: { needed: bars, x: bars ? cx : 0, y: bars ? cy : 0, width: bars ? cw : W, height: bars ? ch : H, bars: { top, bottom, left, right }, ...(lopsided ? { darkEdges: found, note: 'some edges stay dark through the whole clip but not as a symmetric pair, so they were taken for picture and left alone — pass a crop rectangle to remove them' } : {}) },
+    dead, cuts,
+    audio: env ? { analysed: true, peakDb: env.peakDb, silentBelowDb: a.silenceDb ?? -45 } : { analysed: false, why: audioWhy },
+    timeline: tl, legend: '# live   ~ still or dark picture, but audible   . black   _ blank   = frozen   (one mark per sample, start → end)',
+    backend: g.backend, hardwareAccelerated: g.hardwareAccelerated, ...(g.fallbackReason ? { fallbackReason: g.fallbackReason } : {}),
+  };
+}
+
+register({
+  name: 'video.scan', readOnly: true,
+  description: 'Analyse a video to find what can be cut away. Samples frames across the whole clip and listens to the audio track, then reports: `trim` — the range worth keeping once the dead lead-in and tail are gone (black, blank or frozen frames with nothing audible), found to within one frame; `crop` — the picture rectangle inside black letterbox / pillarbox bars (symmetric pairs only); `dead` — every dead stretch including ones in the middle; `cuts` — approximate scene changes; and `timeline`, one character per sample. Nothing is written. Pass trim.start / trim.end to video.trim and crop to video.convert, or call video.web to do all of it and get a web-ready file. A frozen or black picture with speech or music over it is kept unless ignoreAudio=true. Returns {duration, width, height, fps, sampled, step, trim:{needed,start,end,duration,head,tail}, crop:{needed,x,y,width,height,bars}, dead[], cuts[], audio, timeline, legend, backend}.',
+  schema: {
+    properties: {
+      input: P.input(),
+      samples: { type: 'integer', default: 240, minimum: 8, maximum: 600, description: 'Maximum number of frames to look at (one every 0.25 s until this cap spreads them further apart)' },
+      blackLevel: { type: 'number', default: 20, minimum: 1, maximum: 120, description: 'Mean brightness (0–255) below which a frame counts as black' },
+      motion: { type: 'number', default: 0.35, minimum: 0.01, maximum: 20, description: 'Mean brightness change between two samples (0–255) below which the picture counts as frozen' },
+      silenceDb: { type: 'number', default: -45, minimum: -90, maximum: -6, description: 'Audio level in dBFS below which sound counts as silence' },
+      ignoreAudio: { type: 'boolean', default: false, description: 'Judge by the picture alone: black or frozen stretches are dead even when something is audible' },
+      minDead: { type: 'number', default: 0.4, minimum: 0, description: 'Shortest dead stretch worth reporting or trimming, in seconds' },
+      pad: { type: 'number', default: 0.1, minimum: 0, maximum: 5, description: 'Seconds of dead time to leave on each side of the kept range' },
+      barLevel: { type: 'number', default: 20, minimum: 1, maximum: 120, description: 'Brightness (0–255) a line must never exceed, in any sampled frame, to count as part of a black bar' },
+      backend: P.backend, hardware: P.hardware,
+    },
+    required: ['input'],
+  },
+  examples: ['video.scan input=clip.mp4', 'video.scan input=talk.mp4 ignoreAudio=true minDead=1'],
+  run: async (a, ctx) => { const r = await scanVideo(a, ctx, await needVideo(a, ctx)); ctx.progress(1, 'done'); return r; },
+});
+
+// ── the cutting bench: a player with in/out marks and an optional crop rectangle. It is how any video is shown in
+// the viewport, and what video.ask puts up when an agent wants the human to choose.
+const BENCH_CSS = `
+.bench{display:flex;flex-direction:column;gap:6px;place-self:stretch;min-height:0;min-width:0}
+.bench-stage{position:relative;flex:1 1 0;min-height:110px;background:#000;box-shadow:0 0 0 1px var(--line)}
+.bench-stage video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+.bench-veil{position:absolute;cursor:crosshair;overflow:hidden;touch-action:none}
+.bench-veil[hidden],.bench-rect[hidden]{display:none}
+.bench-rect{position:absolute;outline:1px dashed var(--phos);box-shadow:0 0 0 9999px rgba(4,7,4,.6)}
+.bench-bar{position:relative;flex:none;height:12px;background:var(--bg2);box-shadow:0 0 0 1px var(--line);cursor:pointer}
+.bench-fill{position:absolute;top:0;bottom:0;background:var(--dim)}
+.bench-head{position:absolute;top:-2px;bottom:-2px;width:1px;background:var(--hi)}
+.bench-row{display:flex;flex:none;flex-wrap:wrap;gap:4px 6px;align-items:center;justify-content:center;font-variant-numeric:tabular-nums}
+.bench button,.bench input{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);padding:0 6px;border-radius:0}
+.bench button{cursor:pointer}.bench button:hover,.bench button.on{color:var(--bg);background:var(--phos)}
+.bench button:disabled{opacity:.5;cursor:wait}
+.bench button.go{color:var(--bg);background:var(--phos);border-color:var(--phos)}
+.bench input{width:9ch}
+.bench-msg{flex:none;margin:0;color:var(--warn);text-align:center}
+.bench-info{color:var(--dim)}`;
+let benchCss = false;
+const quote = (p) => (/\s/.test(p) ? `"${p}"` : p);
+/** o: {duration?, init?: {start, end, crop}, ask?: {message, crop}, done?(value), cancel?()} → {root, get()} */
+function bench(stat, o = {}) {
+  if (!benchCss) { benchCss = true; const st = document.createElement('style'); st.textContent = BENCH_CSS; document.head.append(st); }
+  const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const btn = (text, tip, fn) => { const b = h('button', '', text); b.type = 'button'; b.title = tip; b.onclick = fn; return b; };
+  const num = (tip) => { const i = h('input'); i.type = 'number'; i.step = '0.01'; i.min = '0'; i.title = tip; return i; };
+  const s = { dur: o.duration || stat.duration || 0, start: o.init?.start || 0, end: o.init?.end ?? null, crop: o.init?.crop || null, cut: false };
+  const root = h('div', 'bench'), stage = h('div', 'bench-stage'), v = h('video'), veil = h('div', 'bench-veil'), rect = h('div', 'bench-rect');
+  v.controls = true; v.muted = true; v.playsInline = true; v.preload = 'metadata'; v.src = vfs.url(stat.path);
+  veil.hidden = true; rect.hidden = true; veil.append(rect); stage.append(v, veil);
+  const bar = h('div', 'bench-bar'), fill = h('div', 'bench-fill'), head = h('div', 'bench-head'); bar.append(fill, head);
+  bar.title = 'the kept range — click to seek';
+  const tin = num('start of the kept range, seconds'), tout = num('end of the kept range, seconds'), info = h('span', 'bench-info');
+  const end = () => s.end ?? s.dur;
+  const paint = () => {
+    tin.value = s.start.toFixed(2); tout.value = end().toFixed(2);
+    if (s.dur > 0) { fill.style.left = `${100 * s.start / s.dur}%`; fill.style.width = `${Math.max(0.3, 100 * (end() - s.start) / s.dur)}%`; }
+    info.textContent = `${fmtTime(end() - s.start)} kept${s.dur ? ` of ${fmtTime(s.dur)}` : ''}${s.crop ? ` · crop ${s.crop.x},${s.crop.y},${s.crop.width},${s.crop.height}` : ''}`;
+    if (s.crop && v.videoWidth) { rect.hidden = false; Object.assign(rect.style, { left: `${100 * s.crop.x / v.videoWidth}%`, top: `${100 * s.crop.y / v.videoHeight}%`, width: `${100 * s.crop.width / v.videoWidth}%`, height: `${100 * s.crop.height / v.videoHeight}%` }); } else rect.hidden = true;
+  };
+  const setIn = (t) => { s.start = Math.max(0, Math.min(t, end() - 0.05)); paint(); }, setOut = (t) => { s.end = Math.min(s.dur || t, Math.max(t, s.start + 0.05)); paint(); };
+  const fit = () => {
+    const W = v.videoWidth, H = v.videoHeight, cw = stage.clientWidth, ch = stage.clientHeight; if (!W || !cw) return;
+    const k = Math.min(cw / W, ch / H); Object.assign(veil.style, { left: `${(cw - W * k) / 2}px`, top: `${(ch - H * k) / 2}px`, width: `${W * k}px`, height: `${H * k}px` });
+  };
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fit).observe(stage);
+  v.addEventListener('loadedmetadata', () => { if (!s.dur && Number.isFinite(v.duration)) s.dur = v.duration; if (s.start) v.currentTime = s.start; fit(); paint(); });
+  v.addEventListener('timeupdate', () => { if (s.dur) head.style.left = `${100 * v.currentTime / s.dur}%`; if (s.cut && v.currentTime >= end()) { s.cut = false; v.pause(); } });
+  bar.onclick = (e) => { const r = bar.getBoundingClientRect(); if (s.dur) v.currentTime = s.dur * Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)); };
+  tin.onchange = () => { setIn(Number(tin.value) || 0); v.currentTime = s.start; }; tout.onchange = () => { setOut(Number(tout.value) || s.dur); v.currentTime = Math.max(s.start, end() - 0.04); };
+  const bCrop = btn('▢ crop', 'draw a rectangle on the picture to keep only that area; a plain click on the picture clears it', () => { veil.hidden = !veil.hidden; bCrop.classList.toggle('on', !veil.hidden); paint(); });
+  let drag = null;
+  const at = (e) => { const r = veil.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; };
+  veil.onpointerdown = (e) => { veil.setPointerCapture(e.pointerId); drag = at(e); };
+  veil.onpointermove = veil.onpointerup = (e) => {
+    if (!drag) return; const [x, y] = at(e), W = v.videoWidth, H = v.videoHeight;
+    const c = { x: Math.round(Math.min(x, drag[0]) * W / 2) * 2, y: Math.round(Math.min(y, drag[1]) * H / 2) * 2, width: Math.round(Math.abs(x - drag[0]) * W / 2) * 2, height: Math.round(Math.abs(y - drag[1]) * H / 2) * 2 };
+    s.crop = c.width >= 16 && c.height >= 16 ? c : null; if (e.type === 'pointerup') drag = null; paint();
+  };
+  const bAuto = btn('auto', 'analyse the video (video.scan) and set the marks to skip dead time at both ends and black bars', async () => {
+    bAuto.disabled = true; bAuto.textContent = 'scanning…';
+    const r = await M.call('video.scan', { input: stat.path }, { via: 'terminal' });
+    bAuto.disabled = false; bAuto.textContent = 'auto';
+    if (!r.ok) return; s.dur ||= r.result.duration; s.start = r.result.trim.start; s.end = r.result.trim.end; s.crop = r.result.crop.needed ? (({ x, y, width, height }) => ({ x, y, width, height }))(r.result.crop) : s.crop; if (s.crop) { veil.hidden = false; bCrop.classList.add('on'); } v.currentTime = s.start; paint();
+  });
+  const marks = h('div', 'bench-row');
+  marks.append(btn('⟦ in', 'start the kept range at the current frame', () => setIn(v.currentTime)), tin, h('span', 'bench-info', '→'), tout, btn('out ⟧', 'end the kept range at the current frame', () => setOut(v.currentTime)),
+    btn('▶ cut', 'play only the kept range', () => { v.currentTime = s.start; s.cut = true; v.play().catch(() => {}); }), bCrop, bAuto);
+  const get = () => ({ start: r3(s.start), end: r3(end()), crop: s.crop ? { ...s.crop } : null });
+  const acts = h('div', 'bench-row');
+  if (o.ask) {
+    const ok = btn('ok — use this', 'answer the agent with these marks', () => o.done?.(get())); ok.classList.add('go');
+    acts.append(ok, btn('cancel', 'dismiss the question without answering', () => o.cancel?.()), info);
+    root.append(h('p', 'bench-msg', `⟐ ${o.ask.message}`));
+    if (o.ask.crop) { veil.hidden = false; bCrop.classList.add('on'); }
+  } else {
+    const run = (cmd) => (M.exec ? M.exec(cmd) : null);
+    const range = () => { const g = get(), full = g.start <= 0.005 && (!s.dur || g.end >= s.dur - 0.005); return full ? '' : ` start=${g.start} end=${g.end}`; };
+    const crop = () => (s.crop ? ` crop=${s.crop.x},${s.crop.y},${s.crop.width},${s.crop.height}` : '');
+    acts.append(btn('trim', 'cut the kept range out with video.trim (no re-encoding where possible)', () => run(`video.trim input=${quote(stat.path)} start=${get().start} end=${get().end}`)),
+      btn('web 720', 'video.web: these marks (or, with none set, automatically detected dead time and bars) → 720p MP4 for the web', () => run(`video.web input=${quote(stat.path)} resolution=720${range()}${crop()}`)),
+      btn('web 1080', 'video.web: same, at 1080p', () => run(`video.web input=${quote(stat.path)} resolution=1080${range()}${crop()}`)), info);
+  }
+  root.append(stage, bar, marks, acts); paint();
+  return { root, get };
+}
+if (typeof document !== 'undefined') M.registerPreviewer((stat) => /^video\//.test(stat.mime || ''), (stat, el) => { el.replaceChildren(bench(stat).root); });
+
+let asking = null;
+/** put the bench up as a question and wait for the human → {start, end, crop, waitedSec} */
+function askHuman(input, ctx, src, { message, init, timeoutSec = 300, crop = false }) {
+  const el = typeof document !== 'undefined' ? document.getElementById('viewport') : null;
+  if (!el) throw new Error('there is no viewport on this page to ask a human in — pass start/end yourself, or use video.scan');
+  asking?.('superseded by a newer question');
+  const stat = vfs.stat(input), t0 = performance.now();
+  return new Promise((resolve, reject) => {
+    let timer = 0;
+    const close = (v) => { clearTimeout(timer); asking = null; el.replaceChildren(bench(stat, { duration: src.duration, init: v || init }).root); const meta = document.getElementById('view-meta'); if (meta) meta.textContent = stat.mime; };
+    const fail = (why) => { close(null); reject(new Error(why)); };
+    const b = bench(stat, { duration: src.duration, init, ask: { message, crop }, done: (v) => { close(v); resolve({ ...v, waitedSec: r3((performance.now() - t0) / 1000) }); }, cancel: () => fail('the human dismissed the question — nothing was chosen') });
+    el.replaceChildren(b.root); el.scrollIntoView?.({ block: 'nearest' });
+    const name = document.getElementById('view-name'), meta = document.getElementById('view-meta'); if (name) name.textContent = stat.path; if (meta) meta.textContent = 'a question for the human — the agent is waiting';
+    asking = fail;
+    timer = setTimeout(() => fail(`no answer within ${timeoutSec} s — nobody may be watching the page. Use video.scan for an automatic suggestion, or pass start/end yourself`), timeoutSec * 1000);
+    ctx.warn(`waiting for a human: ${message}`); ctx.progress(-1, 'waiting for a human');
+  });
+}
+const cropOf = (c) => (c?.needed ? { x: c.x, y: c.y, width: c.width, height: c.height } : null);
+
+register({
+  name: 'video.ask', readOnly: true,
+  description: 'Ask the HUMAN at the page which part of a video to keep. Shows the video in the viewport with in/out marks (and, with crop=true, a rectangle to draw on the picture), pre-set to what video.scan suggests, and WAITS until they press ok. Use it when the cut is a matter of taste or video.scan found nothing; it fails after timeoutSec if nobody answers, so do not call it when no human is watching. Nothing is written — pass the answer to video.trim, video.convert or video.web. Returns {answered, start, end, duration, crop, suggested, changed, waitedSec}.',
+  schema: {
+    properties: {
+      input: P.input(),
+      message: { type: 'string', default: 'Mark the part of this video to keep, then press ok.', description: 'The question shown to the human' },
+      crop: { type: 'boolean', default: false, description: 'Also invite them to draw a crop rectangle on the picture' },
+      suggest: { type: 'boolean', default: true, description: 'Pre-set the marks with video.scan (dead lead-in/tail skipped, black bars cropped)' },
+      start: { ...P.start, description: 'Initial in mark in seconds (overrides the suggestion)' }, end: { ...P.end, description: 'Initial out mark in seconds (overrides the suggestion)' },
+      timeoutSec: { type: 'integer', default: 300, minimum: 5, maximum: 3600, description: 'Give up after this many seconds without an answer' },
+    },
+    required: ['input'],
+  },
+  examples: ['video.ask input=clip.mp4', 'video.ask input=clip.mp4 crop=true message="Where does the talk start and end?"'],
+  async run(a, ctx) {
+    const src = await needVideo(a, ctx);
+    let scan = null;
+    if (a.suggest) scan = await scanVideo({ input: a.input }, ctx, src).catch((e) => { ctx.warn(`no suggestion: ${msgOf(e)}`); return null; });
+    const suggested = scan ? { start: scan.trim.start, end: scan.trim.end, crop: cropOf(scan.crop) } : null;
+    const init = { start: a.start ?? suggested?.start ?? 0, end: a.end ?? suggested?.end ?? src.duration, crop: a.crop ? suggested?.crop || null : null };
+    const v = await askHuman(a.input, ctx, src, { message: a.message, init, timeoutSec: a.timeoutSec, crop: a.crop });
+    return { answered: true, start: v.start, end: v.end, duration: r3(v.end - v.start), crop: v.crop, suggested, changed: v.start !== r3(init.start) || v.end !== r3(init.end) || JSON.stringify(v.crop) !== JSON.stringify(init.crop), waitedSec: v.waitedSec };
+  },
+});
+
+/** is the index (moov) ahead of the media data, so that playback can begin before the download ends? → true | false | null */
+function moovFirst(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let o = 0; o + 8 <= bytes.length;) {
+    let size = dv.getUint32(o); const type = String.fromCharCode(bytes[o + 4], bytes[o + 5], bytes[o + 6], bytes[o + 7]);
+    if (type === 'moov' || type === 'moof') return true; if (type === 'mdat') return false;
+    if (size === 1 && o + 16 <= bytes.length) size = Number(dv.getBigUint64(o + 8)); if (size < 8) return null;
+    o += size;
+  }
+  return null;
+}
+const WEB_BPP = { low: 0.055, medium: 0.085, high: 0.12 };
+
+register({
+  name: 'video.web',
+  description: `One call from a raw clip to a file ready to put on a web page: cuts the dead time off both ends, crops black bars away, scales down to 720p or 1080p (the short side; never up), and encodes H.264 + AAC in an MP4 whose index comes first so it starts playing while it downloads (or VP9 + Opus in WebM with format=webm). The frame rate is capped at 30 and the bitrate chosen for the size, never above the source's. trim=auto (default) uses video.scan to find the range; trim=ask shows the video to the human at the page with the suggestion pre-set and waits for them to confirm or move the marks; start/end given explicitly always win. crop=auto removes detected black bars, crop=none keeps the frame, or give a rectangle. Returns {output, trim:{start,end,by,removedSeconds}, crop, width, height, fps, before, after, savedPercent, fastStart, backend, hardwareAccelerated, video, audio, notes}. ${LIMITS}`,
+  schema: {
+    properties: {
+      input: P.input(), output: P.output,
+      resolution: { type: 'integer', enum: [480, 720, 1080], default: 720, description: 'Target size of the short side in pixels (720 → 1280×720 for 16:9). A smaller source is kept as it is' },
+      trim: { type: 'string', enum: ['auto', 'ask', 'none'], default: 'auto', description: 'auto = cut the dead lead-in and tail that video.scan finds; ask = let the human at the page set the range (waits for them); none = keep the whole length' },
+      start: { ...P.start, description: 'Keep from this time in seconds (overrides trim=auto)' }, end: { ...P.end, description: 'Keep up to this time in seconds (overrides trim=auto)' },
+      crop: { type: ['string', 'object'], description: '"auto" (default) = remove detected black bars; "none" = keep the frame; or a rectangle {x, y, width, height} / "x,y,width,height" in source pixels', properties: { x: { type: 'integer', description: 'Left edge' }, y: { type: 'integer', description: 'Top edge' }, width: { type: 'integer', description: 'Width' }, height: { type: 'integer', description: 'Height' } } },
+      quality: { type: 'string', enum: ['low', 'medium', 'high'], default: 'medium', description: 'Bitrate budget: medium ≈ 2.3 Mbit/s at 720p30 and 5.3 Mbit/s at 1080p30; low ≈ 65 % of that, high ≈ 140 %' },
+      maxFps: { type: 'number', default: 30, minimum: 1, maximum: 120, description: 'Cap the frame rate (a slower source is kept)' },
+      format: { type: 'string', enum: ['auto', 'mp4', 'webm'], default: 'auto', description: 'auto = from the output extension, else mp4 (plays everywhere)' },
+      mute: { type: 'boolean', default: false, description: 'Drop the audio track' },
+      askTimeoutSec: { type: 'integer', default: 300, minimum: 5, maximum: 3600, description: 'With trim=ask: how long to wait for the human' },
+      backend: P.backend, hardware: P.hardware,
+    },
+    required: ['input'],
+  },
+  examples: ['video.web input=raw.mov', 'video.web input=raw.mov resolution=1080 quality=high', 'video.web input=talk.mp4 trim=ask', 'video.web input=clip.mp4 start=3.5 end=42 crop=none output=clip.web.mp4'],
+  async run(a, ctx) {
+    const src = await needVideo(a, ctx), sv = src.video, dur = src.duration, notes = [];
+    const format = a.format !== 'auto' ? a.format : containerOf(a.output, null) === 'webm' ? 'webm' : 'mp4';
+    const given = a.start !== undefined || a.end !== undefined;
+    const cropArg = a.crop === undefined || a.crop === '' ? 'auto' : a.crop;
+    const by = a.trim === 'ask' ? 'ask' : given ? 'given' : a.trim;
+    let scan = null;
+    if (by === 'auto' || by === 'ask' || cropArg === 'auto') scan = await scanVideo({ input: a.input, backend: a.backend, hardware: a.hardware }, sub(ctx, 0, 0.2), src).catch((e) => { notes.push(`analysis failed (${msgOf(e)}), so nothing was detected automatically`); return null; });
+    let start = by === 'auto' ? scan?.trim.start ?? 0 : a.start ?? (by === 'ask' ? scan?.trim.start : 0) ?? 0;
+    let end = by === 'auto' ? scan?.trim.end ?? dur : a.end ?? (by === 'ask' ? scan?.trim.end : dur) ?? dur;
+    let crop = cropArg === 'auto' ? cropOf(scan?.crop) : cropArg === 'none' ? null : parseCrop(cropArg);
+    if (by === 'ask') {
+      const v = await askHuman(a.input, ctx, src, { message: 'Mark the part to keep, then press ok — it will be encoded for the web.', init: { start, end, crop }, timeoutSec: a.askTimeoutSec, crop: !!crop });
+      start = v.start; end = v.end; crop = v.crop;
+    }
+    end = Math.min(end, dur); if (!(end > start)) throw new Error(`empty range: start=${start} end=${end} (the video is ${dur} s long)`);
+    if (by === 'auto' && scan?.trim.note) notes.push(scan.trim.note);
+    if (by === 'auto' && scan && !scan.trim.needed && !scan.trim.note) notes.push('no dead time was found at either end — the whole length was kept (trim=ask lets a human choose, or pass start/end)');
+    const inner = planSize(sv, { crop });                                    // validates the rectangle against the frame
+    const short = Math.min(inner.width, inner.height), k = Math.min(1, a.resolution / short);
+    const W = even(inner.width * k), H = even(inner.height * k);
+    if (k === 1 && short < a.resolution) notes.push(`the picture is ${short}p, below the ${a.resolution}p target — kept at its size, not enlarged`);
+    const fps = sv.fps && sv.fps > a.maxFps + 0.5 ? a.maxFps : undefined, fpsOut = fps || sv.fps || 30;
+    let vbitrate = Math.round(WEB_BPP[a.quality] * W * H * fpsOut);
+    const had = src.bitrate ? Math.max(0, src.bitrate - (src.audio?.bitrate || 0)) : 0;           // what the source spends on its picture
+    if (had && vbitrate > had) { vbitrate = Math.round(had); notes.push('the bitrate was held at the source\'s: asking for more would only make the file larger'); }
+    vbitrate = Math.max(80000, vbitrate);
+    const mute = a.mute || !src.audio;
+    const p = {
+      input: a.input, backend: a.backend, hardware: a.hardware || 'auto', format, vcodec: null, acodec: null,
+      ...(k < 1 || crop ? { width: W, height: H, fit: 'fill' } : {}), fps, vbitrate, abitrate: mute ? undefined : a.quality === 'low' || src.audio.channels === 1 ? 96000 : 128000,
+      start: start > 0.005 ? start : undefined, end: end < dur - 0.005 ? end : undefined, rotate: 0, crop, mute, copy: 'never', channels: src.audio?.channels > 2 ? 2 : undefined,
+    };
+    const r = await runConvert(p, sub(ctx, by === 'ask' ? 0 : 0.2, 1), src, vfs.out(a.output, a.input, `web${a.resolution}`, format));
+    const after = r.output.bytes, fastStart = format === 'mp4' ? moovFirst(vfs.read(r.output.path)) : null;
+    if (fastStart === false) notes.push('the MP4 index is at the end of the file: it plays, but only once fully downloaded');
+    if (after >= src.bytes) notes.push('the result is not smaller than the source, which was already compressed harder than this — try quality=low or a lower resolution');
+    return {
+      ...r, trim: { start: r3(start), end: r3(end), by, removedSeconds: r3(dur - (end - start)), ...(by === 'auto' && scan ? { head: scan.trim.head, tail: scan.trim.tail } : {}) },
+      crop: crop ? { ...crop, by: cropArg === 'auto' && by !== 'ask' ? 'auto' : by === 'ask' ? 'ask' : 'given' } : null,
+      resolution: a.resolution, width: r.video?.width ?? W, height: r.video?.height ?? H, fps: r.video?.fps ?? r3(fpsOut), targetVideoBitrate: vbitrate,
+      before: src.bytes, after, savedPercent: r3(100 * (1 - after / src.bytes)), ...(fastStart === null ? {} : { fastStart }), ...(notes.length ? { notes } : {}),
+    };
+  },
+});
+
 // ──────────────────────────────────────────────────── test pattern ──
 register({
   name: 'video.testPattern',

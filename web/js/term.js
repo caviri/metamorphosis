@@ -138,7 +138,7 @@ M.on('vfs', () => { clearTimeout(listFiles.t); listFiles.t = setTimeout(listFile
 
 // ───────────────────────────────────────────────────────── viewport ──
 let shown = null;
-const PREVIEW_MODULE = [[/pdf$/, 'pdf'], [/geo\+json|kml|gpx/, 'geo']];
+const PREVIEW_MODULE = [[/pdf$/, 'pdf'], [/geo\+json|kml|gpx/, 'geo'], [/^video\//, 'video']];
 async function render(path) {
   const el = $('viewport');
   let stat; try { stat = vfs.stat(path); } catch { return; }

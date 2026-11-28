@@ -14141,6 +14141,57 @@
    "readOnly": true
   },
   {
+   "name": "video.ask",
+   "room": "video",
+   "description": "Ask the HUMAN at the page which part of a video to keep. Shows the video in the viewport with in/out marks (and, with crop=true, a rectangle to draw on the picture), pre-set to what video.scan suggests, and WAITS until they press ok. Use it when the cut is a matter of taste or video.scan found nothing; it fails after timeoutSec if nobody answers, so do not call it when no human is watching. Nothing is written — pass the answer to video.trim, video.convert or video.web. Returns {answered, start, end, duration, crop, suggested, changed, waitedSec}.",
+   "inputSchema": {
+    "properties": {
+     "input": {
+      "type": "string",
+      "description": "VFS path of the source video"
+     },
+     "message": {
+      "type": "string",
+      "default": "Mark the part of this video to keep, then press ok.",
+      "description": "The question shown to the human"
+     },
+     "crop": {
+      "type": "boolean",
+      "default": false,
+      "description": "Also invite them to draw a crop rectangle on the picture"
+     },
+     "suggest": {
+      "type": "boolean",
+      "default": true,
+      "description": "Pre-set the marks with video.scan (dead lead-in/tail skipped, black bars cropped)"
+     },
+     "start": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Initial in mark in seconds (overrides the suggestion)"
+     },
+     "end": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Initial out mark in seconds (overrides the suggestion)"
+     },
+     "timeoutSec": {
+      "type": "integer",
+      "default": 300,
+      "minimum": 5,
+      "maximum": 3600,
+      "description": "Give up after this many seconds without an answer"
+     }
+    },
+    "required": [
+     "input"
+    ],
+    "type": "object"
+   },
+   "gpu": false,
+   "readOnly": true
+  },
+  {
    "name": "video.capabilities",
    "room": "video",
    "description": "What this browser can do with video/audio: per codec (h264, hevc, vp8, vp9, av1; aac, opus, mp3, vorbis, flac, pcm) whether WebCodecs can decode and encode it, separately for any/hardware/software implementations (VideoEncoder/VideoDecoder.isConfigSupported at the given resolution), which audio encoders come from bundled WASM instead, which containers each backend writes, and whether the ffmpeg.wasm fallback is reachable. Use it to choose codecs before converting.",
@@ -15125,6 +15176,98 @@
    "readOnly": true
   },
   {
+   "name": "video.scan",
+   "room": "video",
+   "description": "Analyse a video to find what can be cut away. Samples frames across the whole clip and listens to the audio track, then reports: `trim` — the range worth keeping once the dead lead-in and tail are gone (black, blank or frozen frames with nothing audible), found to within one frame; `crop` — the picture rectangle inside black letterbox / pillarbox bars (symmetric pairs only); `dead` — every dead stretch including ones in the middle; `cuts` — approximate scene changes; and `timeline`, one character per sample. Nothing is written. Pass trim.start / trim.end to video.trim and crop to video.convert, or call video.web to do all of it and get a web-ready file. A frozen or black picture with speech or music over it is kept unless ignoreAudio=true. Returns {duration, width, height, fps, sampled, step, trim:{needed,start,end,duration,head,tail}, crop:{needed,x,y,width,height,bars}, dead[], cuts[], audio, timeline, legend, backend}.",
+   "inputSchema": {
+    "properties": {
+     "input": {
+      "type": "string",
+      "description": "VFS path of the source video"
+     },
+     "samples": {
+      "type": "integer",
+      "default": 240,
+      "minimum": 8,
+      "maximum": 600,
+      "description": "Maximum number of frames to look at (one every 0.25 s until this cap spreads them further apart)"
+     },
+     "blackLevel": {
+      "type": "number",
+      "default": 20,
+      "minimum": 1,
+      "maximum": 120,
+      "description": "Mean brightness (0–255) below which a frame counts as black"
+     },
+     "motion": {
+      "type": "number",
+      "default": 0.35,
+      "minimum": 0.01,
+      "maximum": 20,
+      "description": "Mean brightness change between two samples (0–255) below which the picture counts as frozen"
+     },
+     "silenceDb": {
+      "type": "number",
+      "default": -45,
+      "minimum": -90,
+      "maximum": -6,
+      "description": "Audio level in dBFS below which sound counts as silence"
+     },
+     "ignoreAudio": {
+      "type": "boolean",
+      "default": false,
+      "description": "Judge by the picture alone: black or frozen stretches are dead even when something is audible"
+     },
+     "minDead": {
+      "type": "number",
+      "default": 0.4,
+      "minimum": 0,
+      "description": "Shortest dead stretch worth reporting or trimming, in seconds"
+     },
+     "pad": {
+      "type": "number",
+      "default": 0.1,
+      "minimum": 0,
+      "maximum": 5,
+      "description": "Seconds of dead time to leave on each side of the kept range"
+     },
+     "barLevel": {
+      "type": "number",
+      "default": 20,
+      "minimum": 1,
+      "maximum": 120,
+      "description": "Brightness (0–255) a line must never exceed, in any sampled frame, to count as part of a black bar"
+     },
+     "backend": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "webcodecs",
+       "ffmpeg"
+      ],
+      "default": "auto",
+      "description": "auto = WebCodecs (hardware-accelerated where the browser offers it), falling back to ffmpeg.wasm (CPU) when WebCodecs cannot do the job; webcodecs / ffmpeg force one and fail instead of falling back"
+     },
+     "hardware": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "hardware",
+       "software"
+      ],
+      "default": "auto",
+      "description": "WebCodecs only. auto = use a hardware codec when one exists; hardware = require it (fails if none); software = force CPU codecs (slower, sometimes better quality at low bitrates)"
+     }
+    },
+    "required": [
+     "input"
+    ],
+    "type": "object"
+   },
+   "gpu": false,
+   "readOnly": true
+  },
+  {
    "name": "video.speed",
    "room": "video",
    "description": "Speed a video up or slow it down (factor 2 = twice as fast, 0.5 = half speed). WebCodecs backend: audio is resampled, so its pitch rises/falls with the tempo (or drop it with audio=drop). ffmpeg backend: audio keeps its pitch (atempo filter) — choose backend=ffmpeg when speech must stay natural. When speeding up, frames are dropped so the frame rate does not exceed the source's. Returns {output, factor, audioMethod, backend, duration, video, audio}. Limits: everything is held in browser memory — WebCodecs handles inputs up to ~1900 MB (practically a few hundred MB), the ffmpeg backend up to 1024 MB of input and a 2 GB WebAssembly heap, and is 5–50× slower (CPU, one thread).",
@@ -15556,6 +15699,143 @@
       ],
       "default": "auto",
       "description": "auto = exact cut, copying when possible; copy = keyframe-aligned stream copy; reencode = always re-encode"
+     },
+     "backend": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "webcodecs",
+       "ffmpeg"
+      ],
+      "default": "auto",
+      "description": "auto = WebCodecs (hardware-accelerated where the browser offers it), falling back to ffmpeg.wasm (CPU) when WebCodecs cannot do the job; webcodecs / ffmpeg force one and fail instead of falling back"
+     },
+     "hardware": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "hardware",
+       "software"
+      ],
+      "default": "auto",
+      "description": "WebCodecs only. auto = use a hardware codec when one exists; hardware = require it (fails if none); software = force CPU codecs (slower, sometimes better quality at low bitrates)"
+     }
+    },
+    "required": [
+     "input"
+    ],
+    "type": "object"
+   },
+   "gpu": false,
+   "readOnly": false
+  },
+  {
+   "name": "video.web",
+   "room": "video",
+   "description": "One call from a raw clip to a file ready to put on a web page: cuts the dead time off both ends, crops black bars away, scales down to 720p or 1080p (the short side; never up), and encodes H.264 + AAC in an MP4 whose index comes first so it starts playing while it downloads (or VP9 + Opus in WebM with format=webm). The frame rate is capped at 30 and the bitrate chosen for the size, never above the source's. trim=auto (default) uses video.scan to find the range; trim=ask shows the video to the human at the page with the suggestion pre-set and waits for them to confirm or move the marks; start/end given explicitly always win. crop=auto removes detected black bars, crop=none keeps the frame, or give a rectangle. Returns {output, trim:{start,end,by,removedSeconds}, crop, width, height, fps, before, after, savedPercent, fastStart, backend, hardwareAccelerated, video, audio, notes}. Limits: everything is held in browser memory — WebCodecs handles inputs up to ~1900 MB (practically a few hundred MB), the ffmpeg backend up to 1024 MB of input and a 2 GB WebAssembly heap, and is 5–50× slower (CPU, one thread).",
+   "inputSchema": {
+    "properties": {
+     "input": {
+      "type": "string",
+      "description": "VFS path of the source video"
+     },
+     "output": {
+      "type": "string",
+      "description": "VFS path to write (default: derived from the input name); its extension selects the container when format is not given"
+     },
+     "resolution": {
+      "type": "integer",
+      "enum": [
+       480,
+       720,
+       1080
+      ],
+      "default": 720,
+      "description": "Target size of the short side in pixels (720 → 1280×720 for 16:9). A smaller source is kept as it is"
+     },
+     "trim": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "ask",
+       "none"
+      ],
+      "default": "auto",
+      "description": "auto = cut the dead lead-in and tail that video.scan finds; ask = let the human at the page set the range (waits for them); none = keep the whole length"
+     },
+     "start": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Keep from this time in seconds (overrides trim=auto)"
+     },
+     "end": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Keep up to this time in seconds (overrides trim=auto)"
+     },
+     "crop": {
+      "type": [
+       "string",
+       "object"
+      ],
+      "description": "\"auto\" (default) = remove detected black bars; \"none\" = keep the frame; or a rectangle {x, y, width, height} / \"x,y,width,height\" in source pixels",
+      "properties": {
+       "x": {
+        "type": "integer",
+        "description": "Left edge"
+       },
+       "y": {
+        "type": "integer",
+        "description": "Top edge"
+       },
+       "width": {
+        "type": "integer",
+        "description": "Width"
+       },
+       "height": {
+        "type": "integer",
+        "description": "Height"
+       }
+      }
+     },
+     "quality": {
+      "type": "string",
+      "enum": [
+       "low",
+       "medium",
+       "high"
+      ],
+      "default": "medium",
+      "description": "Bitrate budget: medium ≈ 2.3 Mbit/s at 720p30 and 5.3 Mbit/s at 1080p30; low ≈ 65 % of that, high ≈ 140 %"
+     },
+     "maxFps": {
+      "type": "number",
+      "default": 30,
+      "minimum": 1,
+      "maximum": 120,
+      "description": "Cap the frame rate (a slower source is kept)"
+     },
+     "format": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "mp4",
+       "webm"
+      ],
+      "default": "auto",
+      "description": "auto = from the output extension, else mp4 (plays everywhere)"
+     },
+     "mute": {
+      "type": "boolean",
+      "default": false,
+      "description": "Drop the audio track"
+     },
+     "askTimeoutSec": {
+      "type": "integer",
+      "default": 300,
+      "minimum": 5,
+      "maximum": 3600,
+      "description": "With trim=ask: how long to wait for the human"
      },
      "backend": {
       "type": "string",

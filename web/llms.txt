@@ -29,7 +29,7 @@ Each room exposes one family plus `fs.*` and `sys.*`. Go to the room that has wh
 - [synth/](synth/): synthetic images, dithering, WebGPU playground — noise, fractals, automata, test cards, palettes, custom WGSL shaders
 - [vision/](vision/): OCR, barcodes and QR codes, neural image classification
 - [pdf/](pdf/): inspect, extract text, render pages, merge, split, rotate, compress, watermark, build from images or markdown
-- [video/](video/): probe, convert, compress, trim, frames, contact sheets, GIF, audio extraction
+- [video/](video/): probe, convert, compress, trim, frames, contact sheets, GIF, audio extraction — `video.scan` finds dead time and black bars, `video.ask` lets the human at the page mark the range, `video.web` cuts, crops and returns a 720p/1080p file ready for the web
 - [audio/](audio/): convert, edit, loudness and spectral stats, spectrogram and waveform images, pitch, tempo, synthesis, DTMF, Morse
 - [geo/](geo/): GeoJSON / KML / GPX / TopoJSON / WKT / shapefile conversion, simplify, measure, reproject, render maps
 - [data/](data/): CSV / JSON / YAML / TOML / XML / XLSX / Markdown tables — convert, query, stats, schema, diff, charts
